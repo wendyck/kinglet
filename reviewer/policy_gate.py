@@ -4,7 +4,7 @@
 Runs inside the image build and exits non-zero on any non-conformance, so a
 posture regression fails the build rather than shipping.
 
-It checks three things, in increasing order of trust:
+It checks four things, in increasing order of trust:
 
 1. The config parses and every hardening value is literally what we wrote.
    `openclaw config validate` is necessary but NOT sufficient: it is schema-only
@@ -29,12 +29,27 @@ CONFIG = os.environ.get("OPENCLAW_CONFIG_PATH", "/opt/kinglet/openclaw/openclaw.
 # to. They are allowlisted by exact checkId, so a NEW gateway finding still fails.
 ALLOWED_FINDINGS = {
     "summary.attack_surface",
+    # Gateway findings are inert: no gateway process is ever started.
     "gateway.loopback_no_auth",
     "gateway.trusted_proxies_missing",
     "gateway.http.no_auth",
+    # openclaw's plugin index records the install without a version string. The
+    # install itself IS pinned — the Dockerfile installs
+    # @openclaw/amazon-bedrock-provider at an exact version and the image never
+    # installs anything at runtime — so this is a bookkeeping gap, not a
+    # supply-chain one. check_plugins() below asserts the pinning independently.
+    "plugins.installs_unpinned_npm_specs",
 }
 
 # Env vars that would let the Bedrock provider bypass the task role entirely.
+FINDING_JUSTIFICATION = {
+    "gateway.loopback_no_auth": "no gateway process is started",
+    "gateway.trusted_proxies_missing": "no gateway process is started",
+    "gateway.http.no_auth": "no gateway process is started",
+    "plugins.installs_unpinned_npm_specs": "the npm install is pinned in the Dockerfile; "
+                                           "the index record merely omits the version",
+}
+
 FORBIDDEN_ENV = ["AWS_BEARER_TOKEN_BEDROCK", "AWS_BEDROCK_SKIP_AUTH",
                  "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE"]
 
@@ -56,14 +71,25 @@ def run(*args: str) -> subprocess.CompletedProcess:
 
 def check_config_values() -> None:
     """Assert the posture literally, independent of what openclaw reports."""
-    print("[1/3] config invariants")
+    print("[1/4] config invariants")
     cfg = json.load(open(CONFIG))
     t = cfg.get("tools", {})
 
-    if t.get("allow") != ["mcp__fs_readonly__*"]:
-        fail(f"tools.allow must be exactly ['mcp__fs_readonly__*'], got {t.get('allow')!r}")
+    expected_allow = ["fs_readonly__list_files", "fs_readonly__read_file", "fs_readonly__grep"]
+    if sorted(t.get("allow", [])) != sorted(expected_allow):
+        fail(f"tools.allow must be exactly {expected_allow}, got {t.get('allow')!r}")
     else:
-        ok("tools.allow is the fs_readonly MCP surface only")
+        ok("tools.allow is the three fs_readonly tools, enumerated explicitly")
+
+    # The Bedrock provider must use the SDK credential chain (the task role) and
+    # must never carry a static key.
+    prov = cfg.get("models", {}).get("providers", {}).get("amazon-bedrock", {})
+    if prov.get("auth") != "aws-sdk":
+        fail(f"amazon-bedrock auth must be 'aws-sdk' (task role), got {prov.get('auth')!r}")
+    else:
+        ok("amazon-bedrock uses the aws-sdk credential chain")
+    if prov.get("apiKey"):
+        fail("amazon-bedrock must not carry a static apiKey")
 
     for path, expected in [
         (("tools", "elevated", "enabled"), False),
@@ -96,8 +122,27 @@ def check_config_values() -> None:
         ok("fs_readonly is the only registered MCP server")
 
 
+def check_plugins() -> None:
+    """The plugin surface is large by default: 39 of 61 stock plugins load. An
+    untrusted container should carry only what it needs."""
+    print("[2/4] plugin surface")
+    cfg = json.load(open(CONFIG))
+    allow = cfg.get("plugins", {}).get("allow")
+    if allow != ["amazon-bedrock"]:
+        fail(f"plugins.allow must be exactly ['amazon-bedrock'], got {allow!r}")
+    else:
+        ok("plugins.allow restricts loading to the Bedrock provider")
+
+    disc = (cfg.get("plugins", {}).get("entries", {}).get("amazon-bedrock", {})
+            .get("config", {}).get("discovery", {}))
+    if disc.get("enabled") is not False:
+        fail("Bedrock model discovery must be disabled; it calls the catalog API at runtime")
+    else:
+        ok("Bedrock model discovery is off (the model is pinned in config)")
+
+
 def check_security_audit() -> None:
-    print("[2/3] openclaw security audit")
+    print("[3/4] openclaw security audit")
     p = run("openclaw", "security", "audit", "--json")
     try:
         report = json.loads(p.stdout)
@@ -117,7 +162,7 @@ def check_security_audit() -> None:
         if cid not in ALLOWED_FINDINGS:
             fail(f"unexpected {sev} finding {cid}: {f.get('title')}")
         elif sev in ("critical", "warn"):
-            ok(f"{cid} ({sev}) — allowlisted, no gateway is started")
+            ok(f"{cid} ({sev}) — allowlisted: {FINDING_JUSTIFICATION.get(cid, 'see ALLOWED_FINDINGS')}")
 
     summary = next((f.get("detail", "") for f in report.get("findings", [])
                     if f.get("checkId") == "summary.attack_surface"), "")
@@ -133,7 +178,7 @@ def check_security_audit() -> None:
 
 
 def check_env() -> None:
-    print("[3/3] credential escape hatches")
+    print("[4/4] credential escape hatches")
     for var in FORBIDDEN_ENV:
         if os.environ.get(var):
             fail(f"{var} is set in the image; the reviewer must use the task role only")
@@ -151,6 +196,7 @@ def main() -> int:
         ok("openclaw config validate passed (schema only — see module docstring)")
 
     check_config_values()
+    check_plugins()
     check_security_audit()
     check_env()
 

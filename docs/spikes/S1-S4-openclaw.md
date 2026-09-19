@@ -5,10 +5,10 @@ Probe image: `node:24-slim` + `npm i -g openclaw@2026.9.5`.
 
 | Spike | Status |
 |---|---|
-| S1 — headless agent returns parseable JSON | **blocked** (needs a model; see Blocker) |
-| S2 — Bedrock via task-role creds, no internet | **blocked** (see Blocker) |
+| S1 — headless agent returns parseable JSON | **wiring done, blocked on model access** — see Round 3 |
+| S2 — Bedrock via task-role creds, no internet | **wiring done, blocked on model access** — see Round 3 |
 | S3 — deny posture passes lint; red-team fails | **static half PASSES** — posture built, gated in-build, negative-tested. Red-team half still blocked on a model. |
-| S4 — guardrail attachment supported or ruled out | **provisionally ruled out** — see F9 |
+| S4 — guardrail attachment supported or ruled out | **SUPPORTED** — F9 was wrong, see F23 |
 
 ---
 
@@ -278,3 +278,154 @@ Three tampered configs, all caught:
 | F16 — config 600, state dir 700 | §8 file permissions |
 | F17 — openclaw's trust model is not ours | §4 |
 | Model availability | §13 Q2 |
+
+
+---
+
+# Round 3 — end-to-end wiring, and a correction
+
+The reviewer now has `fs_readonly`, `entrypoint.py` and `prompt.md`, and the
+image builds with the gate passing. Driving a real agent turn surfaced six more
+findings, one of which **reverses an earlier conclusion**.
+
+## F23 — S4 reverses: Bedrock guardrails ARE supported
+
+**F9 was wrong.** I grepped openclaw's *core* config schema for `guardrail`,
+found nothing, and concluded attachment was unsupported. The Bedrock provider
+ships as a **separate plugin with its own `configSchema`**, which the core schema
+does not include. That schema has exactly what §8 asked for:
+
+```json
+"guardrail": {
+  "guardrailIdentifier": "string",
+  "guardrailVersion": "string",
+  "streamProcessingMode": "sync" | "async",
+  "trace": "enabled" | "disabled" | "enabled_full"
+}
+```
+
+So the guardrail can be attached at the provider, in addition to Finalize's
+authoritative `ApplyGuardrail`. §8 should take it: a guardrail at the provider
+catches a prompt-attack hit *before* the model's output is even assembled, and
+costs nothing extra. It is configured under
+`plugins.entries["amazon-bedrock"].config.guardrail` once the guardrail resource
+exists.
+
+The general lesson, worth remembering for the rest of Phase 0: **a negative
+result from the core schema means nothing about plugin-provided config.**
+
+## F18 — `--config` and `--isolated` are mutually exclusive
+
+`openclaw agent exec --isolated --config …` fails outright:
+
+```
+--config cannot be combined with --isolated.
+```
+
+This matters more than a flag clash: `--isolated` means "ignore the ambient
+config and run against exec defaults", which would **discard the entire hardened
+posture**. §5.3 must use `--config` alone. Using both, had it been permitted,
+would have silently run the agent unhardened.
+
+## F19 — the Bedrock provider is a plugin openclaw fetches from npm at runtime
+
+`openclaw mcp doctor` printed:
+
+```
+- Installed missing configured plugin "amazon-bedrock" from
+  @openclaw/amazon-bedrock-provider@2026.9.5.
+```
+
+It reached out to npm mid-run. In production the reviewer has **no internet**, so
+this would fail the task, and if it ever succeeded it would be an unpinned
+runtime code fetch into the untrusted container. The image now installs
+`@openclaw/amazon-bedrock-provider` at build time, pinned to the same version as
+openclaw itself.
+
+## F20 — MCP tools need read-only annotations or they require approval
+
+`openclaw mcp probe` reported:
+
+> tools have no safety annotations; calls require approval in prompting session
+> postures
+
+A headless Fargate task has nobody to approve anything. The three tools now
+declare `ToolAnnotations(readOnlyHint=True, destructiveHint=False,
+idempotentHint=True, openWorldHint=False)`, which is also simply true of them.
+
+## F21 — §8's allowlist matched nothing
+
+The single most consequential wiring bug. §8 specifies
+`tools.allow: ["mcp__fs_readonly__*"]`. The actual registered names have **no
+`mcp__` prefix**:
+
+```
+fs_readonly__grep          fs_readonly__read_file      fs_readonly__list_files
+fs_readonly__prompts_get   fs_readonly__prompts_list
+fs_readonly__resources_list fs_readonly__resources_read
+```
+
+The agent refused to start: *"No callable tools remain after resolving explicit
+tool allowlist (tools.allow: mcp__fs_readonly__*); no registered tools matched."*
+
+Two lessons. First, the prefix is wrong. Second, `MCPServer` auto-exposes four
+`prompts_*` / `resources_*` tools beyond the three we wrote, so a glob would have
+granted more than intended. The config now **enumerates the three tools
+explicitly** rather than globbing.
+
+Credit where due: openclaw failed closed here — the wrong allowlist produced zero
+tools rather than all of them.
+
+## F22 — 39 of 61 plugins load by default
+
+`openclaw plugins list` reports `39/61 enabled` out of the box, in a container
+whose threat model assumes the model is hostile. `plugins.allow` restricts
+loading to a named set; with `["amazon-bedrock"]` the count drops to 3. The gate
+asserts it.
+
+## F24 — provider wiring that actually works
+
+For the record, since none of this is in §8:
+
+| Setting | Value | Why |
+|---|---|---|
+| provider id | `amazon-bedrock` | not `bedrock` |
+| `auth` | `aws-sdk` | the SDK credential chain, i.e. the task role — this is S2's mechanism |
+| `api` | `bedrock-converse-stream` | without it the provider falls back to OpenAI-compat and demands a base URL |
+| `region` | `us-west-2` | |
+| `models[]` | the pinned inference profile, with `id` and `name` | |
+| `discovery.enabled` | `false` | discovery calls the Bedrock catalog API at runtime; the model is pinned, so it is unnecessary |
+
+## Blocker — the Anthropic use-case form
+
+With the wiring correct, the agent reached Bedrock and got:
+
+```
+ResourceNotFoundException: Model use case details have not been submitted for
+this account. Fill out the Anthropic use case details form before using the
+model.
+```
+
+`aws bedrock get-use-case-for-model-access` confirms it at the account level:
+*"You have not filled out the request form."* It affects every Anthropic model
+in the account, Sonnet and Haiku alike.
+
+Note the sequence: earlier in the same session a plain `InvokeModel` against this
+profile **succeeded**, then began failing this way. The account appears to have
+moved from the new-account verification hold into a state that requires the
+use-case form. Either way it is now a **manual console step**, not something that
+can be automated from here.
+
+S1 and S2 are wired and ready; they need that form submitted, then a re-run.
+
+## Status after Round 3
+
+| Piece | State |
+|---|---|
+| `fs_readonly` MCP server | written, 20 containment tests pass |
+| `entrypoint.py` | written; S3 bundle fetch, safe extraction, freeze, agent run, JSON extraction |
+| `prompt.md` | written |
+| Image + policy gate | builds clean on ARM64, gate passes, negative-tested |
+| Bedrock provider wiring | correct — reaches the model and gets an account-level error, not a config error |
+| S1 / S2 | blocked on the use-case form |
+| S3 red-team | still to run; needs a working model |

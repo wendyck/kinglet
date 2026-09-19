@@ -26,11 +26,18 @@ RUN apt-get update \
         python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
+COPY requirements.txt /opt/kinglet/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r /opt/kinglet/requirements.txt boto3
+
 # openclaw and four transitive packages run install scripts. Naming them
 # explicitly means a NEW script-bearing dependency fails the build instead of
 # executing silently (spike S1-S4, F6).
+# The Bedrock provider ships as a separate plugin. openclaw will fetch it from
+# npm on first use if it is missing — which would be a runtime network call in a
+# container that has no internet (spike F19). Install it at build time.
 RUN npm config set allow-scripts=openclaw,@google/genai,koffi,tree-sitter-bash,protobufjs --location=user \
     && npm i -g "openclaw@${OPENCLAW_VERSION}" \
+                "@openclaw/amazon-bedrock-provider@${OPENCLAW_VERSION}" \
     && npm cache clean --force
 
 RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 kinglet \
@@ -41,13 +48,18 @@ RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 kinglet \
 WORKDIR /opt/kinglet
 COPY openclaw/openclaw.json  /opt/kinglet/openclaw/openclaw.json
 COPY policy_gate.py          /opt/kinglet/policy_gate.py
+COPY prompt.md               /opt/kinglet/prompt.md
+COPY entrypoint.py           /opt/kinglet/entrypoint.py
+COPY fs_readonly/            /opt/kinglet/fs_readonly/
 
 # The security audit flags a world-readable config as critical, and it is right
 # to: a config can carry tokens. Ours must be readable only by the run user.
 RUN chown -R kinglet:kinglet /opt/kinglet \
     && chmod 600 /opt/kinglet/openclaw/openclaw.json
 
-ENV OPENCLAW_CONFIG_PATH=/opt/kinglet/openclaw/openclaw.json \
+ENV PYTHONPATH=/opt/kinglet \
+    PYTHONDONTWRITEBYTECODE=1 \
+    OPENCLAW_CONFIG_PATH=/opt/kinglet/openclaw/openclaw.json \
     OPENCLAW_STATE_DIR=/state \
     NODE_ENV=production \
     NPM_CONFIG_UPDATE_NOTIFIER=false
@@ -58,7 +70,8 @@ USER kinglet
 # posture drift (SPEC.md §8, "fails the build on any non-conformance").
 RUN python3 /opt/kinglet/policy_gate.py
 
-# TODO(phase-0): fs_readonly MCP server, entrypoint.py and the fixed prompt.md
-# land next. openclaw.json already registers fs_readonly, which the gate checks
-# statically; it is only resolved at agent runtime.
-CMD ["python3", "-c", "raise SystemExit('kinglet reviewer: entrypoint not yet implemented')"]
+# Smoke-test the MCP server at build time: an import error here is far cheaper
+# to find now than in a Fargate task.
+RUN python3 -c "from fs_readonly import server; print('fs_readonly imports OK')"
+
+ENTRYPOINT ["python3", "/opt/kinglet/entrypoint.py"]

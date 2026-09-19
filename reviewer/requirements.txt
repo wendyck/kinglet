@@ -1,0 +1,4 @@
+# Reviewer container dependencies. Pinned: the image must build identically and
+# run with no network at runtime.
+mcp==2.2.0
+google-re2==1.1.20251105

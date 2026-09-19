@@ -1,7 +1,9 @@
 {
   "tools": {
     "allow": [
-      "mcp__fs_readonly__*"
+      "fs_readonly__list_files",
+      "fs_readonly__read_file",
+      "fs_readonly__grep"
     ],
     "deny": [
       "exec",
@@ -67,6 +69,39 @@
           "--root",
           "/work"
         ]
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "amazon-bedrock": {
+        "auth": "aws-sdk",
+        "region": "us-west-2",
+        "models": [
+          {
+            "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "name": "Claude Sonnet 4.5 (Bedrock, us-west-2 inference profile)",
+            "contextTokens": 200000,
+            "maxTokens": 8192
+          }
+        ],
+        "api": "bedrock-converse-stream"
+      }
+    }
+  },
+  "plugins": {
+    "allow": [
+      "amazon-bedrock"
+    ],
+    "entries": {
+      "amazon-bedrock": {
+        "enabled": true,
+        "config": {
+          "discovery": {
+            "enabled": false,
+            "region": "us-west-2"
+          }
+        }
       }
     }
   }
