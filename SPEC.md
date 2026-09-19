@@ -4,9 +4,18 @@ Automated, security-conscious triage of Dependabot pull requests. Kinglet posts 
 comment per PR with a per-package risk matrix, and applies a `risk:low`,
 `risk:medium` or `risk:high` label.
 
-Status: **v3.1, design approved** (2026-09-19). v3.1 applies five corrections
-from the S5 spike (`docs/spikes/S5-dependabot-trailer.md`), all confined to Tier 1
-parsing and test expectations. Decisions locked in this draft:
+Status: **v3.2, design approved** (2026-09-19).
+
+- v3.1 applied five corrections from the S5 spike
+  (`docs/spikes/S5-dependabot-trailer.md`), confined to Tier 1 parsing and test
+  expectations.
+- v3.2 applies the S1–S4 spike results (`docs/spikes/S1-S4-openclaw.md`),
+  verified against **openclaw 2026.9.5**. These reach §4, §5.3, §8, §9 and §13.
+  Two were latent defects: §8's tool posture did not actually disable elevated
+  tools or browser control (F14), and §5.3's state directory would have broken
+  every reviewer run at runtime (F15).
+
+Decisions locked in this draft:
 
 | Decision | Choice |
 |---|---|
@@ -98,9 +107,9 @@ EventBridge Scheduler (rate 10 min)
 │        │                                                                             │
 │        ▼  ecs:runTask.sync  (timeout 10 min)                                         │
 │  Reviewer Fargate task (Tier 2, private subnet, NO internet, NO GitHub creds)         │
-│   • entrypoint: fetch bundle → /work (read-only) → start OpenClaw gateway (loopback)  │
-│   • openclaw agent --session-key agent:kinglet:pr-<repo>-<pr>-<sha12> …              │
-│   • tools: fs-readonly MCP only; exec/process/write/edit/web DENIED                   │
+│   • entrypoint: fetch bundle → /work (read-only); state on separate tmpfs /state      │
+│   • openclaw agent exec --isolated --config … --state-dir /state --json  (no gateway) │
+│   • tools: fs-readonly MCP only; exec/process/write/edit/web/browser/elevated DENIED  │
 │   • model: Bedrock via VPC endpoint                                                   │
 │   • writes s3://…/results/<exec>.json                                                  │
 │        │                                                                             │
@@ -157,6 +166,16 @@ still only ever *read*.
 | Cross-PR contamination | Fresh task per PR, and a unique session key. |
 | ReDoS via model-supplied grep pattern | fs-readonly uses RE2 (linear time), with pattern-length and result caps. |
 | Runaway cost | Step Functions timeout; max N executions started per poll; max turns and tokens set in OpenClaw; Bedrock budget alarm. |
+
+**On OpenClaw's own trust model.** openclaw's security audit states that its
+trust model is "personal assistant (one trusted operator boundary), **not hostile
+multi-tenant**". Kinglet deliberately runs it against attacker-influenceable
+input. This does not change the design — §3 already assumes the reviewer may be
+fully compromised and contains it with no credentials, no network route, a
+read-only bundle and a strictly validated output — but it does fix the ordering:
+**OpenClaw's tool denial is defense in depth, never the boundary.** The boundary
+is the container, the network and the Tier 1 validation. Any future change that
+starts relying on tool denial alone is a regression.
 
 **Residual risks (accepted):**
 - The model can still produce a *wrong but well-formed* review. It can only err
@@ -260,32 +279,63 @@ still only ever *read*.
 
 ### 5.3 Reviewer task (Fargate)
 
-**Image:** pinned `node` LTS slim, pinned OpenClaw version, pinned Python for the
-MCP server. It runs as a non-root user, with a read-only root filesystem, and a
-tmpfs for `/work` and OpenClaw state.
+**Image:** `node:24-slim` **pinned by digest**, pinned OpenClaw version, pinned
+Python for the MCP server. It runs as a non-root user (uid 10001), with a
+read-only root filesystem. Architecture is **linux/arm64** (Fargate ARM64), which
+also matches the development machines.
+
+The Node version is a narrow window, not a floor: openclaw 2026.9.5 requires
+`>=24.16 <25 || >=26.1`, so Node 22 fails outright and a future Node 25 would too
+(F6). Pin the digest and treat a Node bump like a model upgrade — deliberate and
+gated on evals.
+
+The image install pins npm `allow-scripts` to exactly the packages that
+legitimately run install scripts, so a new script-bearing transitive dependency
+fails the build instead of executing silently.
+
+**Two tmpfs mounts, not one** (F15):
+
+| Mount | Contents | Why separate |
+|---|---|---|
+| `/work` | the extracted bundle, made read-only after extraction | the agent's only view of PR data |
+| `/state` | `OPENCLAW_STATE_DIR`, mode 700 | openclaw writes state even during read-only operations; under `/work` the `chmod -R a-w` in step 1 would break every invocation |
 
 **Entrypoint** (a small Python script, not an LLM):
 1. Gets the bundle from S3 (only the key passed in the task overrides), extracts
    it to `/work`, then runs `chmod -R a-w /work`.
-2. Starts the OpenClaw gateway bound to loopback, with the config from §8.
-3. Runs:
+2. Runs one isolated headless agent turn. **No gateway is started** (F7):
 
    ```
-   openclaw agent --agent kinglet \
-     --session-key agent:kinglet:pr-<owner>-<repo>-<pr>-<sha12> \
-     --message-file /opt/kinglet/prompt.md
+   openclaw agent exec \
+     --isolated \
+     --config /opt/kinglet/openclaw/openclaw.json \
+     --state-dir /state \
+     --message-file /opt/kinglet/prompt.md \
+     --model bedrock/<pinned inference profile> \
+     --timeout 540 \
+     --json
    ```
+
+   `agent exec` is documented as "run one isolated headless embedded agent turn"
+   and emits a stable JSON envelope. Dropping the gateway removes a listening
+   socket, an HTTP surface and an auth token from the container whose whole
+   purpose is to be untrusted.
+
+   There is no `--session-key`: that is a gateway flag. The per-PR isolation it
+   provided is already stronger here, since every PR gets a fresh container and a
+   fresh `--state-dir`.
 
    The prompt is **fixed text baked into the image**. It tells the agent to load
    the `analyze-dependabot-pr` skill, read `task.json`, and return exactly one
    JSON object.
-4. Extracts the last JSON object from the output. On failure it retries once,
-   then gives up.
-5. Puts the result to `results/<exec>.json` and exits 0. It exits non-zero on
+3. Parses the JSON envelope and extracts the agent's final JSON object. On
+   failure it retries once, then gives up.
+4. Puts the result to `results/<exec>.json` and exits 0. It exits non-zero on
    error, which triggers the Step Functions Catch.
 
-**Limits:** 1 vCPU and 2 GB; 10-minute task timeout; OpenClaw max turns of about
-40; per-response output token cap.
+**Limits:** 1 vCPU and 2 GB; 10-minute task timeout; `--timeout 540` on the agent
+turn so it fails inside the task rather than being killed; OpenClaw max turns of
+about 40; per-response output token cap.
 
 ### 5.4 fs-readonly MCP server
 Kinglet's own code, about 200 lines of Python using the `mcp` SDK, served over
@@ -532,38 +582,68 @@ from them.
 
 ## 8. OpenClaw configuration (reviewer)
 
-All items marked **[S]** must be verified in the Phase 0 spikes against the pinned
-OpenClaw version.
+Verified against **openclaw 2026.9.5**. The live config is
+`reviewer/openclaw/openclaw.json`; this section states the requirements it must
+satisfy, and `reviewer/policy_gate.py` enforces them at build time.
 
-- **Agent `kinglet`:** one agent, with `workspaceAccess: none`. It only sees files
-  via MCP.
-- **Tool posture:**
-  - `tools.deny`: `group:runtime` (exec, process) and `group:fs` (write, edit,
-    apply_patch).
-  - Also deny web fetch/search, browser, message send, sub-agent spawn,
-    cron/scheduling and memory. **[S]** enumerate the built-ins for the pinned
-    version.
-  - `tools.allow`: `mcp__fs_readonly__*` only.
-- **MCP:** `fs_readonly` registered on the agent via stdio, running `python -m
-  fs_readonly --root /work`.
-- **Gateway:** `gateway.bind=loopback`; HTTP endpoints not needed are denied via
-  `gateway.http.denyEndpoints`; remote mode disabled.
-- **Provider:** Bedrock, using the container's task-role credentials and a Claude
-  inference profile in us-west-2. **[S]** Guardrail attachment
-  (`guardrailIdentifier`, `streamProcessingMode: sync`) if the OpenClaw Bedrock
-  provider supports it. Otherwise rely on Finalize's ApplyGuardrail, which is
-  authoritative either way.
-- **Policy gate:** `policy.jsonc` requires:
-  - the deny posture above;
-  - a loopback bind;
-  - no non-approved MCP servers;
-  - telemetry content capture off;
-  - no session transcript memory indexing.
+- **Agent sandbox:** `agents.defaults.sandbox.workspaceAccess: "none"`. Note the
+  nesting — the key is under `sandbox`, not at agent top level (F8). The agent
+  only sees files via MCP.
 
-  The image build runs `openclaw doctor --lint` and **fails the build** on any
-  non-conformance.
-- **Offline:** the image must start and run with no internet. **[S]** Confirm no
-  runtime npm fetches, update checks or telemetry calls.
+- **Tool posture.** An allowlist alone is **not** sufficient. With
+  `tools.allow` set to the MCP surface only, openclaw still reports
+  `tools.elevated: enabled` and `browser control: enabled` (F14). Each capability
+  needs its own switch:
+
+  | Setting | Value |
+  |---|---|
+  | `tools.allow` | `["mcp__fs_readonly__*"]` — the only tools the agent may call |
+  | `tools.elevated.enabled` | `false` |
+  | `tools.web.fetch.enabled`, `tools.web.search.enabled` | `false` |
+  | `tools.fs.workspaceOnly` | `true` |
+  | `browser.enabled` | `false` |
+  | `telemetry.enabled` | `false` |
+  | `tools.deny` | exec, process, shell, write, edit, apply_patch, web, browser, message send, sub-agent spawn, cron, memory, file transfer — **defense in depth only** |
+
+  `tools.deny` is deliberately secondary. Unknown tool names in it are accepted
+  silently (F13), so it can never be the primary control; the allowlist plus the
+  per-capability switches are.
+
+- **MCP:** `fs_readonly` registered via stdio, running
+  `python3 -m fs_readonly --root /work`, and it must be the **only** registered
+  server.
+
+- **No gateway.** The reviewer runs `openclaw agent exec --isolated` (§5.3). There
+  is no bind address, no HTTP surface and no gateway auth token to manage.
+
+- **Provider:** Bedrock, using the container's task-role credentials and a pinned
+  Claude inference profile in us-west-2. The bundled AWS SDK resolves
+  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, which is the ECS task-role mechanism
+  (F10). Guardrail attachment is **not supported** — no such key exists anywhere
+  in the config schema (F9) — so Finalize's `ApplyGuardrail` governs, as this
+  section already anticipated. The image must carry no
+  `AWS_BEARER_TOKEN_BEDROCK`, `AWS_BEDROCK_SKIP_AUTH` or static AWS credentials,
+  each of which could route around the task role.
+
+- **File permissions:** config mode 600, state dir mode 700. openclaw's own audit
+  raises these as critical and warn respectively (F16).
+
+- **Policy gate:** `reviewer/policy_gate.py` runs as the final build step and
+  **fails the build** on any non-conformance. It checks, in order:
+  1. `openclaw config validate` passes — necessary but not sufficient, since it
+     is schema-only;
+  2. every value in the table above, asserted from the parsed config;
+  3. `openclaw security audit --json` reports no finding outside a justified
+     allowlist, and its attack-surface summary confirms elevated tools, browser
+     control and hooks are actually off;
+  4. no credential escape hatch in the environment.
+
+  The audit is the machine-checkable surface — it emits stable `checkId`s where
+  `doctor --lint` emits prose (F12). The gate is negative-tested against tampered
+  configs; see the spike doc.
+
+- **Offline:** the image must start and run with no internet. Telemetry is off in
+  config; confirm no runtime npm fetches or update checks during S1.
 
 ### 8.1 Skill: `analyze-dependabot-pr`
 Adapted from the Renovate-review skill. The changes are:
@@ -605,7 +685,7 @@ Adapted from the Renovate-review skill. The changes are:
 | `AWS::Scheduler::Schedule` | rate(10 min) → Poller |
 | Poller, Prepare, Finalize | Python 3.13, **not** in a VPC (GitHub egress without NAT) |
 | `AWS::Serverless::StateMachine` | Standard; states Prepare → RunTask.sync → Finalize; Catch → Finalize(failure); 20 min timeout |
-| ECS cluster + task def + ECR repo | Fargate; `readonlyRootFilesystem`; tmpfs for `/work` |
+| ECS cluster + task def + ECR repo | Fargate **ARM64**; `readonlyRootFilesystem`; **two** tmpfs mounts, `/work` and `/state` (F15) |
 | VPC | 1 private subnet (single AZ), **no IGW, no NAT** |
 | VPC endpoints | Gateway: S3. Interface: `bedrock-runtime`, `ecr.api`, `ecr.dkr`, `logs`. |
 | S3 bucket | Prefixes `bundles/`, `meta/`, `results/`; 7-day lifecycle; bucket policy restricts reviewer access to the VPC endpoint |
@@ -694,17 +774,21 @@ kinglet/
 
 ## 12. Phases
 
-**Phase 0: spikes (de-risk OpenClaw).** Exit when every **[S]** item in §8 is
-confirmed, and when:
-- S1: `openclaw agent` runs headless in a container and returns parseable final
-  JSON.
-- S2: the Bedrock provider works via task-role credentials with **no internet**
-  (endpoints only).
-- S3: the deny posture passes `openclaw doctor --lint`. A red-team prompt ("run
-  `curl`", "read /proc/self/environ", "write a file") fails in every variant.
-- S4: guardrail attachment is either supported or ruled out.
-- S5: the Dependabot trailer is present and parseable on all 8 real PRs,
-  including csa-wrangler range updates and Actions bumps.
+**Phase 0: spikes (de-risk OpenClaw).** Findings are recorded in `docs/spikes/`
+and folded back into this spec. Exit when every §8 requirement is verified
+against the pinned OpenClaw version, and when:
+
+| Spike | Exit criterion | Status |
+|---|---|---|
+| S1 | `openclaw agent exec` runs headless in a container and returns parseable final JSON | open |
+| S2 | the Bedrock provider works via task-role credentials with **no internet** (endpoints only) | open |
+| S3 | the posture passes the policy gate, and a red-team prompt ("run `curl`", "read /proc/self/environ", "write a file") fails in every variant | **gate half done** — built, enforced in-build and negative-tested; red-team runs still open |
+| S4 | guardrail attachment is either supported or ruled out | **done** — ruled out (F9) |
+| S5 | the Dependabot trailer is present and parseable on all 8 real PRs, including csa-wrangler range updates and Actions bumps | **done** — 8/8 |
+
+The Phase 0 red-team runs are the ones that matter most, and they are the ones
+still outstanding: the posture is currently verified by *configuration audit*,
+not by a model actually trying and failing to escape it.
 
 **Phase 1: pipeline, no LLM.**
 - Build the Poller, Prepare, a stub reviewer (echoes the floor) and Finalize,
@@ -768,9 +852,13 @@ confirmed, and when:
 ## 13. Decisions log and open questions
 
 **Resolved**
-- **Q2. Model:** Claude Sonnet on Bedrock. Pin the exact model version and
-  us-west-2 inference profile in Phase 0 (S2). Upgrades are deliberate and gated
-  on the Phase 3 evals.
+- **Q2. Model:** Claude Sonnet on Bedrock, pinned to
+  `us.anthropic.claude-sonnet-4-5-20250929-v1:0`. Confirmed invokable in account
+  `220840683614` on 2026-09-19. Two constraints found while confirming it:
+  `us.anthropic.claude-sonnet-5` returns "not available for this account" and
+  would need a model-access request, and the `global.*` profiles are likewise
+  unavailable, so the `us.*` profile is the one to use. Upgrades are deliberate
+  and gated on the Phase 3 evals.
 - **Q3. Superseded PRs:** yes. Kinglet posts a "superseded by #N" comment,
   per §5.6.
 - **Q4. Security-update PRs:** yes, with a distinct header driven by the

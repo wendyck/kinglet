@@ -257,3 +257,24 @@ Three tampered configs, all caught:
   the audit verifies. The deny list stays as defense in depth.
 - `fs_readonly`, `entrypoint.py` and `prompt.md` are not yet written; the image
   has a placeholder CMD.
+
+
+---
+
+## Applied to SPEC.md v3.2
+
+| Finding | Landed in |
+|---|---|
+| F6 — Node 24, pinned by digest | §5.3 image |
+| F7 — `agent exec`, no gateway | §3 diagram, §5.3 entrypoint, §8 |
+| F8 — `workspaceAccess` under `sandbox` | §8 |
+| F9 — no guardrail attachment | §8 provider |
+| F10 — task-role creds; forbid auth overrides | §8 provider |
+| F11 — allowlist over `group:` deny tokens | §8 tool posture |
+| F12 — `security audit` is the gate surface | §8 policy gate |
+| F13 — `config validate` is schema-only | §8 tool posture + policy gate |
+| F14 — elevated/browser need explicit switches | §8 tool posture |
+| F15 — state dir off `/work`, two tmpfs | §5.3, §9 |
+| F16 — config 600, state dir 700 | §8 file permissions |
+| F17 — openclaw's trust model is not ours | §4 |
+| Model availability | §13 Q2 |
