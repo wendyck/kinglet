@@ -26,10 +26,26 @@ from .dependabot import Update, normalize
 
 LOW, MEDIUM, HIGH = "low", "medium", "high"
 _ORDER = {LOW: 0, MEDIUM: 1, HIGH: 2}
+_BY_RANK = [LOW, MEDIUM, HIGH]
 
 
 def worst(*levels: str) -> str:
     return max(levels, key=lambda l: _ORDER[l], default=LOW)
+
+
+def soften(level: str) -> str:
+    """One step down, floored at low."""
+    return _BY_RANK[max(0, _ORDER[level] - 1)]
+
+
+# Why a floor is what it is. The distinction matters for range updates: a `>=`
+# floor raise does not change what a build resolves (§2), so a rule that says
+# "this package matters here" softens. A rule that says "this version delta is
+# breaking by convention" does not, because the raised floor still crosses that
+# boundary.
+IMPORTANCE_REASONS = {"FRAMEWORK", "WATCHLIST", "PRODUCTION_MINOR"}
+SEMANTIC_REASONS = {"MAJOR_BUMP", "ZERO_X_MINOR", "NEW_DEPENDENCY", "UNPARSEABLE",
+                    "ACTION_MAJOR"}
 
 
 # Manifests that hold tooling rather than deployed code (§6, F5).
@@ -133,25 +149,37 @@ def package_floor(u: Update, repo_config: dict | None = None) -> Floor:
                 floor.raise_to(MEDIUM, "ACTION_TAG_REF")
         return floor
 
-    # pip (and, for now, anything else that parses)
+    # pip (and, for now, anything else that parses). Semantic and importance
+    # rules are accumulated separately so a range update can soften one without
+    # touching the other.
+    semantic, importance = Floor(), Floor()
+
     if kind == "major":
-        floor.raise_to(HIGH, "MAJOR_BUMP")
+        semantic.raise_to(HIGH, "MAJOR_BUMP")
     elif kind == "minor":
         if frm is not None and _part(frm, 0) == 0:
-            floor.raise_to(HIGH, "ZERO_X_MINOR")
+            semantic.raise_to(HIGH, "ZERO_X_MINOR")
         if name in frameworks:
-            floor.raise_to(HIGH, "FRAMEWORK")
+            importance.raise_to(HIGH, "FRAMEWORK")
         if name in watchlist:
-            floor.raise_to(MEDIUM, "WATCHLIST")
+            importance.raise_to(MEDIUM, "WATCHLIST")
         if is_production_manifest(u.manifest):
-            floor.raise_to(MEDIUM, "PRODUCTION_MINOR")
-    else:  # patch or none
-        if name in frameworks and kind == "patch":
-            pass  # §6 lists frameworks for minor or major only
+            importance.raise_to(MEDIUM, "PRODUCTION_MINOR")
+    else:  # patch, or no forward movement
         floor.raise_to(LOW, "PATCH" if kind == "patch" else "NO_CHANGE")
 
+    level = worst(semantic.level, importance.level)
     if u.is_range and kind in ("minor", "patch"):
+        # A `>=` raise within the same major: the build already floats past it.
         floor.reasons.append("RANGE_FLOOR_ONLY")
+        if importance.level != LOW and _ORDER[importance.level] >= _ORDER[semantic.level]:
+            floor.reasons.append("RANGE_SOFTENED")
+        level = worst(semantic.level, soften(importance.level))
+
+    floor.level = worst(floor.level, level)
+    for r in semantic.reasons + importance.reasons:
+        if r not in floor.reasons:
+            floor.reasons.append(r)
 
     return floor
 

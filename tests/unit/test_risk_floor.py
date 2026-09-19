@@ -1,8 +1,8 @@
 """Tests for the deterministic risk floor (SPEC.md §6).
 
 The floor is the one thing prompt injection cannot move, so these tests are
-about the *rules*, not about any particular PR. The three fixtures where §6 and
-§12 currently disagree are pinned at the bottom, marked as such.
+about the *rules*, not about any particular PR. The real fixtures at the bottom
+are the regression guard for the semantic/importance split (§6).
 """
 
 import json
@@ -208,25 +208,54 @@ def test_fixtures_where_6_and_12_agree(fixture, expected):
     assert floor_for(fixture)[0].level == expected
 
 
-@pytest.mark.parametrize("fixture,computed,spec_12", [
-    ("csa-wrangler-pr10.json", HIGH, LOW),
-    ("csa-wrangler-pr28.json", HIGH, LOW),
-    ("csa-wrangler-pr26.json", MEDIUM, LOW),
+@pytest.mark.parametrize("fixture,expected", [
+    ("csa-wrangler-pr10.json", MEDIUM),   # boto3 range, framework, softened
+    ("csa-wrangler-pr28.json", MEDIUM),   # same
+    ("csa-wrangler-pr26.json", MEDIUM),   # recipe-scrapers pinned, watchlist
+    ("csa-wrangler-pr27.json", MEDIUM),   # dev group; recipe-scrapers drives it
+    ("calendar-digest-pr6.json", HIGH),   # anthropic 0.x minor drives the group
 ])
-def test_fixtures_where_6_and_12_disagree(fixture, computed, spec_12):
-    """Pinned to §6, which is the conservative reading, pending a decision.
+def test_fixtures_resolved_by_the_semantic_importance_split(fixture, expected):
+    assert floor_for(fixture)[0].level == expected
 
-    §6 says a framework package on any minor is `high` and a watchlist package
-    on any minor is `medium`. §12 expects `low` for all three, on the §2
-    reasoning that a `>=` floor raise does not change what a build resolves.
-    Both cannot hold. See SPEC.md §6, "Open: range-floor precedence".
 
-    When that is settled, this test becomes the regression guard for whichever
-    answer wins — so it asserts the current behaviour deliberately, not
-    accidentally.
-    """
-    assert floor_for(fixture)[0].level == computed
-    assert computed != spec_12
+# ── range softening (§6) ─────────────────────────────────────────────────────
+
+
+def test_range_softens_an_importance_rule():
+    """A `>=` raise does not change what the build resolves, so 'this package
+    matters here' drops one step."""
+    pinned = package_floor(pip("boto3", "1.34.0", "1.43.0",
+                               manifest="scripts/requirements.txt"), CSA)
+    ranged = package_floor(pip("boto3", "1.34.0", "1.43.0",
+                               manifest="scripts/requirements.txt",
+                               to_spec=">=1.43.0"), CSA)
+    assert pinned.level == HIGH and "FRAMEWORK" in pinned.reasons
+    assert ranged.level == MEDIUM
+    assert {"FRAMEWORK", "RANGE_FLOOR_ONLY", "RANGE_SOFTENED"} <= set(ranged.reasons)
+
+
+def test_range_does_not_soften_a_semantic_rule():
+    """0.x minors are breaking by convention; the raised floor still crosses
+    that boundary. This is #29, and it must stay high."""
+    ranged = package_floor(pip("anthropic", "0.116.0", "0.121.0",
+                               manifest="scripts/requirements.txt",
+                               to_spec=">=0.121.0"), CSA)
+    assert ranged.level == HIGH
+    assert "ZERO_X_MINOR" in ranged.reasons
+    assert "RANGE_SOFTENED" not in ranged.reasons
+
+
+def test_range_crossing_a_major_is_not_softened():
+    ranged = package_floor(pip("requests", "2.9.0", "3.0.0", to_spec=">=3.0.0"), CSA)
+    assert ranged.level == HIGH and "MAJOR_BUMP" in ranged.reasons
+
+
+def test_softening_never_goes_below_low():
+    ranged = package_floor(pip("httpx", "1.1.0", "1.2.0",
+                               manifest="scripts/requirements.txt",
+                               to_spec=">=1.2.0"), CSA)
+    assert ranged.level == LOW
 
 
 def test_range_floor_only_is_recorded_even_when_it_does_not_cap():

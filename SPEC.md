@@ -493,30 +493,31 @@ Two rules about how the floor reads its inputs:
 | medium | minor bump on a dependency in a production manifest (by path, per above) |
 | **low** | patch; minor on a `direct:development` dependency; range-floor raise within the same major |
 
-### Open: range-floor precedence
+### Range updates soften importance, not semantics
 
-§6's table and §12's fixture expectations currently contradict each other on
-three real PRs. Implemented literally, with the floor being the max of every
-applicable rule:
+Resolved 2026-09-19, after §6's table and §12's expectations were found to
+contradict each other on three real PRs.
 
-| PR | §12 expects | §6 computes | Why |
-|---|---|---|---|
-| csa-wrangler #10 | `low` | **`high`** | `boto3` is on csa-wrangler's `frameworks:` list and `>=1.34 → >=1.43.42` is a minor bump |
-| csa-wrangler #28 | `low` | **`high`** | same, `>=1.34 → >=1.43.69` |
-| csa-wrangler #26 | `low` | **`medium`** | `recipe-scrapers` is on the `watchlist:` and 15.11.0 → 15.12.0 is a minor bump |
+Floor rules fall into two kinds, and a `>=` floor raise treats them differently:
 
-The case for §12 is §2's own reasoning: a `>=` floor raise does not change what
-a build resolves, because the build already floats to the latest version. On
-that reading `RANGE_FLOOR_ONLY` should **cap** the floor at `low` for a
-same-major raise, rather than being recorded alongside a higher level.
+| Kind | Rules | Range behaviour |
+|---|---|---|
+| **Semantic** — this version delta is breaking by convention | `MAJOR_BUMP`, `ZERO_X_MINOR`, `NEW_DEPENDENCY`, `UNPARSEABLE` | **unchanged.** The raised floor still crosses the boundary. |
+| **Importance** — this package matters in this repo | `FRAMEWORK`, `WATCHLIST`, `PRODUCTION_MINOR` | **one step down**, recorded as `RANGE_SOFTENED`. |
 
-The case against is that `frameworks:` exists precisely to make `boto3` changes
-loud, and capping means a framework bump expressed as a range is silently `low`.
+The reasoning is §2's: a `>=` raise within the same major does not change what a
+build resolves, because the build already floats to the latest version. The risk
+was being taken continuously; the PR only documents a new minimum. So "this
+package is important" softens. But "0.x minors are breaking" does not, because
+the new floor genuinely crosses that line.
 
-**Pending a decision, the implementation follows §6** — the conservative
-reading, since a floor that is too high is a nuisance and a floor that is too
-low is a missed finding. `tests/unit/test_risk_floor.py` pins the current
-behaviour explicitly so whichever way this resolves, the change is deliberate.
+A **pinned** (`==`) bump is never softened. `frameworks:` still makes a pinned
+`boto3` minor `high`, which is what the list is for.
+
+This resolves the three fixtures: csa-wrangler #10 and #28 become `medium`
+(framework, softened from `high`), #26 stays `medium` (a *pinned* watchlist
+minor, so nothing softens), and #29 stays `high` (`ZERO_X_MINOR` is semantic).
+§12's table is corrected accordingly.
 
 Example `config/repos.yml`:
 
@@ -901,10 +902,10 @@ into Phase 1.
   | calendar-digest #6 | per-package, depends on the group contents |
   | csa-wrangler #7 (checkout 4→7) | medium |
   | csa-wrangler #20 (setup-python 6→7) | medium |
-  | csa-wrangler #26 (recipe-scrapers minor, scripts) | low |
-  | csa-wrangler #27 (dev group) | low / medium |
-  | csa-wrangler #28, #10 (boto3 range floor) | low, `RANGE_FLOOR_ONLY` |
-  | csa-wrangler #29 (anthropic 0.x) | high |
+  | csa-wrangler #26 (recipe-scrapers pinned minor, scripts) | medium, `WATCHLIST` |
+  | csa-wrangler #27 (dev group) | medium — pytest is `low`, recipe-scrapers drives it |
+  | csa-wrangler #28, #10 (boto3 range floor) | medium, `FRAMEWORK` + `RANGE_FLOOR_ONLY` + `RANGE_SOFTENED` |
+  | csa-wrangler #29 (anthropic 0.x range) | high, `ZERO_X_MINOR` — semantic, so not softened |
 
 - **Supersede fixtures** (all resolved against the real PRs in S5):
 
