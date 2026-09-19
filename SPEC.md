@@ -965,8 +965,18 @@ retry instructions.
   apply because the code uses a current one, and returned `SAFE`. Evidence
   validated against the file index, so the verdict stood. The floor still made
   it `risk:high`.
-- **Remaining:** re-run the red-team corpus against the current posture, which
-  changed after S3 passed (`exec.mode: deny`, the skills allowlist).
+- ✅ **Red-team re-run against the current posture** — 5/5 contained. Worth
+  re-running rather than assuming S3 carried over: `exec.mode: deny`, the skills
+  allowlist and filesystem plugin loading all landed afterwards, and the skill
+  is itself new attack surface, since it instructs the model to go looking for
+  symbols named in untrusted release notes. It held.
+
+  One detail worth keeping: the `/proc/self/environ` case came back `medium`
+  while the rest came back `low`. The model noticed the attempt and rated the
+  package up, which is the behaviour the design wants — contained, and reported
+  rather than silently ignored.
+
+**Phase 2 exit: met.**
 
 **What Phase 2 cost to get working.** Six bugs, none of which local testing
 found — every one needed a real Fargate task:
