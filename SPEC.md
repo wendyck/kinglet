@@ -4,7 +4,7 @@ Automated, security-conscious triage of Dependabot pull requests. Kinglet posts 
 comment per PR with a per-package risk matrix, and applies a `risk:low`,
 `risk:medium` or `risk:high` label.
 
-Status: **v3.4, design approved** (2026-09-19).
+Status: **v3.5, design approved** (2026-09-19).
 
 - v3.1 applied five corrections from the S5 spike
   (`docs/spikes/S5-dependabot-trailer.md`), confined to Tier 1 parsing and test
@@ -24,6 +24,12 @@ Status: **v3.4, design approved** (2026-09-19).
   discusses injection in order to warn the model about it — and blocking the turn
   contradicts §5.2 step 7, which flags a hit and continues. Prompt-attack
   detection therefore stays in Tier 1, where it raises the floor.
+- v3.5 **reverses Q1**: the VPC interface endpoints are deferred, not kept. They
+  cost more than the rest of the system combined and protect public repository
+  data plus a short-lived, narrowly scoped task role. Tool denial becomes the
+  primary exfiltration control, which makes the budget alarm, the CI red-team
+  evals and the build-time policy gate load-bearing. §13 Q1 records the
+  conditions for adding them back.
 
 Decisions locked in this draft:
 
@@ -116,11 +122,11 @@ EventBridge Scheduler (rate 10 min)
 │   • write  s3://…/bundles/<exec>.tar.gz (reviewer read-only)                          │
 │        │                                                                             │
 │        ▼  ecs:runTask.sync  (timeout 10 min)                                         │
-│  Reviewer Fargate task (Tier 2, private subnet, NO internet, NO GitHub creds)         │
+│  Reviewer Fargate task (Tier 2, public subnet, NO GitHub creds, NO secrets access)    │
 │   • entrypoint: fetch bundle → /work (read-only); state on separate tmpfs /state      │
 │   • openclaw agent exec --isolated --config … --state-dir /state --json  (no gateway) │
 │   • tools: fs-readonly MCP only; exec/process/write/edit/web/browser/elevated DENIED  │
-│   • model: Bedrock via VPC endpoint                                                   │
+│   • model: Bedrock over the public endpoint (see §13 Q1)                              │
 │   • writes s3://…/results/<exec>.json                                                  │
 │        │                                                                             │
 │        ▼                                                                             │
@@ -137,12 +143,14 @@ EventBridge Scheduler (rate 10 min)
 ```
 
 Why this shape:
-- **Nothing is internet-facing.** Polling removes the webhook, the ALB, the domain
-  and the webhook secret.
-- **Only Tier 1 holds credentials.** The model runs in a container that has no
-  GitHub token, no Secrets Manager access and no route to the internet. Even full
-  compromise of the model yields "read public repo files, and write one JSON
-  object that is then strictly validated."
+- **Nothing is inbound-facing.** Polling removes the webhook, the ALB, the domain
+  and the webhook secret. There is no endpoint for anyone to reach.
+- **Only Tier 1 holds credentials.** The model runs in a container with no GitHub
+  token and no Secrets Manager access. Even full compromise of the model yields
+  "read public repo files, and write one JSON object that is then strictly
+  validated." The container *does* have outbound network access, because the
+  endpoints that would remove it cost more than the rest of the system combined;
+  §13 Q1 sets out the trade and the conditions for reversing it.
 - **Isolation between PRs comes free.** Each PR gets a fresh container and a
   fresh OpenClaw state dir.
 - **The prompt the reviewer receives is fixed.** Everything PR-derived reaches the
@@ -166,7 +174,7 @@ still only ever *read*.
 
 | Threat | Control |
 |---|---|
-| Injection makes the model run commands or exfiltrate data | `exec`/`process`/web/browser tools denied. Only the jailed fs-readonly MCP is available. No internet route. Task role limited to Bedrock plus two S3 prefixes. |
+| Injection makes the model run commands or exfiltrate data | `exec`/`process`/web/browser tools denied and verified by the build-time policy gate; only the jailed fs-readonly MCP is callable; read-only root filesystem; fresh container per PR. Task role limited to Bedrock plus two S3 prefixes. **The container does have a network route** — see §13 Q1 for what that costs and what bounds it. |
 | Injection steals GitHub credentials | The reviewer never holds any. The App key lives only in Tier 1 Lambdas. Tokens are minted per step and narrowed to one repo and one permission. |
 | Injection makes the bot post malicious content (phishing, @mentions, image-beacon exfiltration via camo) | The model returns enums, `file:line` refs and ≤600 chars of notes. Finalize strips URLs, markdown links and images, HTML and `@`/`#` references, runs ApplyGuardrail, and renders the notes inside a quoted "untrusted model notes" block. |
 | Injection says "this is safe, rate LOW" | Deterministic floor: final risk = max(floor, model). Guardrail prompt-attack hits on the input raise the floor to `high`. |
@@ -770,9 +778,10 @@ Adapted from the Renovate-review skill. The changes are:
 | Poller, Prepare, Finalize | Python 3.13, **not** in a VPC (GitHub egress without NAT) |
 | `AWS::Serverless::StateMachine` | Standard; states Prepare → RunTask.sync → Finalize; Catch → Finalize(failure); 20 min timeout |
 | ECS cluster + task def + ECR repo | Fargate **ARM64**; `readonlyRootFilesystem`; **two** tmpfs mounts, `/work` and `/state` (F15) |
-| VPC | 1 private subnet (single AZ), **no IGW, no NAT** |
-| VPC endpoints | Gateway: S3. Interface: `bedrock-runtime`, `ecr.api`, `ecr.dkr`, `logs`. |
-| S3 bucket | Prefixes `bundles/`, `meta/`, `results/`; 7-day lifecycle; bucket policy restricts reviewer access to the VPC endpoint |
+| VPC | 1 public subnet (single AZ), IGW, **no NAT**. The task takes a public IP and reaches Bedrock, ECR, S3 and Logs over their public endpoints (§13 Q1). |
+| VPC endpoints | **None.** Deferred, not rejected — see §13 Q1 for the trigger to add them back. |
+| S3 bucket | Prefixes `bundles/`, `meta/`, `results/`; 7-day lifecycle. Reviewer access is scoped by task-role IAM to `bundles/*` read and `results/*` write. |
+| Budget guard | A Bedrock spend alarm, and an AWS Budgets action on the account. With no network barrier this is the control that bounds the realistic worst case (§13 Q1), so it is required, not optional. |
 | Secrets Manager | `kinglet/github-app` = `{app_id, private_key}` |
 | Bedrock Guardrails (×2) | `kinglet-reviewer` (`460y8sih9wtm` v1) for Tier 1: prompt-attack HIGH on input plus two denied topics. `kinglet-reviewer-output` (`lubjaymwc18i` v1) attached at the provider: output content filters only. See §8 for why they are separate. Both created in Phase 0; Phase 1 moves ownership into the SAM stack. |
 | SNS topic + alarms | Step Functions failures, reviewer task failures, Bedrock spend |
@@ -795,11 +804,14 @@ Adapted from the Renovate-review skill. The changes are:
 
 | Item | Cost |
 |---|---|
-| 4 interface endpoints × 1 AZ | ≈ $29 (dominant fixed cost) |
 | Bedrock, ~20 reviews/mo at ~$0.30–0.60 each | ≈ $6–12 |
 | Fargate, Lambda, Step Functions, Scheduler, S3 | < $2 |
 | Secrets Manager | $0.40 |
-| **Total** | **≈ $40/mo** |
+| **Total** | **≈ $9–15/mo** |
+
+Adding the four interface endpoints back would cost ≈ $29/mo on top — more than
+twice the running cost of the whole system, and about $1.45 per review against
+$0.30–0.60 of actual model spend.
 
 The endpoint cost is deliberate (§13, Q1). A public-subnet variant would drop it
 but leave the tool denial as the reviewer's only exfiltration control.
@@ -889,10 +901,16 @@ into Phase 1.
   A rebase does not trigger a re-review.
 
 **Phase 2: reviewer.**
-- Build the reviewer image, fs-readonly, the skill, schema validation, the
-  sanitizer and the guardrail.
-- **Exit:** every real fixture produces a valid result, and `replay.py` runs
-  locally against fixtures.
+- Put the Tier 2 container into the pipeline: ECS cluster, task definition, ECR
+  repository, a **public subnet with no NAT and no interface endpoints**
+  (§13 Q1), and the `ecs:runTask.sync` state that replaces Phase 1's stub.
+- Write the `analyze-dependabot-pr` skill (§8.1). The image, `fs_readonly`, the
+  policy gate, the sanitizer and both guardrails already exist from Phase 0.
+- Because tool denial is now the primary exfiltration control, this phase also
+  lands the **Bedrock budget alarm** and wires the red-team corpus into CI.
+- **Exit:** every real fixture produces a valid result; `replay.py` runs locally
+  against fixtures; the S2 task-role path is confirmed on a real Fargate task,
+  which is the half Phase 0 could not reach.
 
 **Phase 3: evals and hardening.**
 - **Real fixtures, expected outcomes:**
@@ -956,9 +974,45 @@ into Phase 1.
 - **Q4. Security-update PRs:** yes, with a distinct header driven by the
   Dependabot alerts API (never PR text). The risk floor is unchanged, per §5.7.
 
-- **Q1. Network isolation:** keep the private VPC endpoints (≈ $29/mo). The
-  reviewer has no internet route at all, which is a network-level barrier
-  independent of OpenClaw's tool denial.
+- **Q1. Network isolation: deferred, not rejected** (revised 2026-09-19; the
+  original answer was to keep the endpoints). The reviewer runs in a **public
+  subnet with no VPC endpoints**, and therefore has a network route.
+
+  *What the endpoints would have bought.* An attacker who achieved code
+  execution inside the container could not reach the internet. That is a
+  network-level barrier independent of OpenClaw's tool denial, which matters
+  because F17 established that OpenClaw's own trust model is "one trusted
+  operator boundary, not hostile multi-tenant".
+
+  *What is actually exposed without it.* Not much, and this is the crux. The
+  bundle is the repo tree and PR text for **public** repositories. The GitHub
+  App key is not in Tier 2 at all. The only real asset is the task role, which
+  grants `bundles/*` read, `results/*` write and one Bedrock inference profile.
+  Exfiltrating it yields **cost abuse, not compromise**, and the credential
+  expires with the task.
+
+  *What it costs.* ≈ $29/mo, against ≈ $9–15/mo for everything else — roughly
+  $1.45 per review in fixed network plumbing versus $0.30–0.60 of model spend.
+
+  *What replaces it.* Tool denial becomes the primary exfiltration control
+  rather than defense in depth, which is a real downgrade. Three things are
+  therefore load-bearing rather than optional:
+
+  1. A **Bedrock budget alarm and an account budget action**, which bound the
+     realistic worst case (§9).
+  2. The **Phase 3 red-team evals run in CI** on every change to the skill,
+     prompt or config. S3 demonstrated containment; CI is what keeps it true.
+  3. The **build-time policy gate** (§8), which already fails the build if the
+     tool posture drifts.
+
+  *When to revisit.* Add the endpoints back if any of these become true:
+  - a **private repository** is enrolled, so the bundle stops being public data;
+  - kinglet reviews repos belonging to **someone other than the operator**;
+  - the task role gains any permission beyond the three above;
+  - a red-team case escapes containment.
+
+  The change is a template edit, not a redesign: one public subnet becomes one
+  private subnet plus four interface endpoints and a gateway endpoint.
 
 **Open**
 - None at the design level. Phase 0 spike results (§12) may reopen §8 details.

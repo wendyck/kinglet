@@ -2,9 +2,10 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
   kinglet — automated, security-conscious triage of Dependabot pull requests.
-  Phase 1: the Tier 1 pipeline with a stub reviewer. No VPC, no ECS and no
-  interface endpoints yet — those arrive with the Tier 2 container in Phase 2,
-  and they are the bulk of the running cost (SPEC.md §9).
+  Phase 1: the Tier 1 pipeline with a stub reviewer. ECS and the VPC arrive with
+  the Tier 2 container in Phase 2. Per §13 Q1 that VPC is a public subnet with no
+  NAT and no interface endpoints, so Phase 2 adds compute cost but not the ~$29/mo
+  of network plumbing.
 
 Parameters:
   AppSecretName:
@@ -75,8 +76,9 @@ Resources:
             AbortIncompleteMultipartUpload:
               DaysAfterInitiation: 1
 
-  # Denies anything that is not TLS. The reviewer-scoping bucket policy from §9
-  # arrives with the VPC endpoint in Phase 2.
+  # Denies anything that is not TLS. With no VPC endpoint to condition on
+  # (§13 Q1), the reviewer's access to bundles/ and results/ is scoped by its
+  # task-role IAM in Phase 2 rather than by a bucket policy.
   ArtifactBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
