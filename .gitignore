@@ -24,3 +24,6 @@ samconfig.local.toml
 
 # local dev venv
 .venv/
+
+# built into the package at deploy time; config/repos.yml is the source
+src/config/

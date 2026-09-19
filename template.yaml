@@ -1,0 +1,300 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  kinglet — automated, security-conscious triage of Dependabot pull requests.
+  Phase 1: the Tier 1 pipeline with a stub reviewer. No VPC, no ECS and no
+  interface endpoints yet — those arrive with the Tier 2 container in Phase 2,
+  and they are the bulk of the running cost (SPEC.md §9).
+
+Parameters:
+  AppSecretName:
+    Type: String
+    Default: kinglet/github-app
+    Description: Secrets Manager secret holding {app_id, private_key}.
+  InputGuardrailId:
+    Type: String
+    Default: "460y8sih9wtm"
+    Description: >
+      Tier 1 guardrail: prompt-attack on input plus denied topics. Created by
+      hand in Phase 0; still to be adopted into this stack (SPEC.md §9).
+  InputGuardrailVersion:
+    Type: String
+    Default: "1"
+  ScheduleState:
+    Type: String
+    Default: DISABLED
+    AllowedValues: [ENABLED, DISABLED]
+    Description: >
+      Starts DISABLED on purpose. Kinglet writes to real pull requests, so the
+      schedule is turned on deliberately (Phase 4), not by deploying.
+  MaxStartsPerRun:
+    Type: String
+    Default: "2"
+  BotLogin:
+    Type: String
+    Default: "kinglet-bot[bot]"
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Architectures: [arm64]
+    Timeout: 120
+    MemorySize: 512
+    Tracing: Active
+    Environment:
+      Variables:
+        KINGLET_BUCKET: !Ref ArtifactBucket
+        KINGLET_APP_SECRET: !Ref AppSecretName
+        KINGLET_CONFIG: /var/task/config/repos.yml
+        KINGLET_BOT_LOGIN: !Ref BotLogin
+        KINGLET_GUARDRAIL_ID: !Ref InputGuardrailId
+        KINGLET_GUARDRAIL_VERSION: !Ref InputGuardrailVersion
+
+Resources:
+
+  # ── storage ────────────────────────────────────────────────────────────────
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "kinglet-artifacts-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-artifacts
+            Status: Enabled
+            ExpirationInDays: 7
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  # Denies anything that is not TLS. The reviewer-scoping bucket policy from §9
+  # arrives with the VPC endpoint in Phase 2.
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !Sub "${ArtifactBucket.Arn}"
+              - !Sub "${ArtifactBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: kinglet-alerts
+      DisplayName: kinglet
+
+  # ── functions ──────────────────────────────────────────────────────────────
+
+  PollerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: kinglet-poller
+      CodeUri: src/
+      Handler: poller.app.handler
+      Timeout: 300
+      Environment:
+        Variables:
+          KINGLET_STATE_MACHINE_ARN: !Ref ReviewStateMachine
+          KINGLET_MAX_STARTS: !Ref MaxStartsPerRun
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AppSecretName}-*"
+        - Statement:
+            - Effect: Allow
+              Action: states:StartExecution
+              Resource: !Ref ReviewStateMachine
+
+  PrepareFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: kinglet-prepare
+      CodeUri: src/
+      Handler: prepare.app.handler
+      Timeout: 600
+      MemorySize: 1536
+      EphemeralStorage:
+        Size: 2048
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AppSecretName}-*"
+        - Statement:
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource:
+                - !Sub "${ArtifactBucket.Arn}/bundles/*"
+                - !Sub "${ArtifactBucket.Arn}/meta/*"
+            - Effect: Allow
+              Action: bedrock:ApplyGuardrail
+              Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/*"
+
+  # Phase 1 only. Phase 2 replaces this with the Fargate task (§5.3), and this
+  # function — the only thing that reads meta/ and writes results/ — goes away.
+  StubReviewerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: kinglet-stub-reviewer
+      CodeUri: src/
+      Handler: stub_reviewer.app.handler
+      Timeout: 60
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource: !Sub "${ArtifactBucket.Arn}/meta/*"
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub "${ArtifactBucket.Arn}/results/*"
+
+  FinalizeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: kinglet-finalize
+      CodeUri: src/
+      Handler: finalize.app.handler
+      Timeout: 300
+      Environment:
+        Variables:
+          KINGLET_SNS_TOPIC: !Ref AlertTopic
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AppSecretName}-*"
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              Resource:
+                - !Sub "${ArtifactBucket.Arn}/meta/*"
+                - !Sub "${ArtifactBucket.Arn}/results/*"
+            - Effect: Allow
+              Action: bedrock:ApplyGuardrail
+              Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/*"
+            - Effect: Allow
+              Action: sns:Publish
+              Resource: !Ref AlertTopic
+
+  # ── orchestration ──────────────────────────────────────────────────────────
+
+  ReviewStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: kinglet-review
+      Type: STANDARD
+      DefinitionUri: statemachine/review.asl.json
+      DefinitionSubstitutions:
+        PrepareFunctionArn: !GetAtt PrepareFunction.Arn
+        ReviewerFunctionArn: !GetAtt StubReviewerFunction.Arn
+        FinalizeFunctionArn: !GetAtt FinalizeFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PrepareFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref StubReviewerFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FinalizeFunction
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: invoke-poller
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt PollerFunction.Arn
+
+  PollSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: kinglet-poll
+      Description: Polls enrolled repos for open Dependabot PRs (SPEC.md §5.1).
+      State: !Ref ScheduleState
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(10 minutes)
+      Target:
+        Arn: !GetAtt PollerFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+
+  # ── alarms ─────────────────────────────────────────────────────────────────
+
+  StateMachineFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: kinglet-review-failures
+      AlarmDescription: A review execution failed (SPEC.md §5.8).
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref ReviewStateMachine
+      Statistic: Sum
+      Period: 900
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+  PollerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: kinglet-poller-errors
+      AlarmDescription: The poller is erroring, so nothing is being reviewed.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref PollerFunction
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 2
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlertTopic
+
+Outputs:
+  BucketName:
+    Description: Artifact bucket (bundles/, meta/, results/)
+    Value: !Ref ArtifactBucket
+  StateMachineArn:
+    Value: !Ref ReviewStateMachine
+  PollerFunction:
+    Value: !Ref PollerFunction
+  AlertTopic:
+    Value: !Ref AlertTopic
+  ScheduleState:
+    Description: Turn the schedule on with --parameter-overrides ScheduleState=ENABLED
+    Value: !Ref ScheduleState

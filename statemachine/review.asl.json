@@ -1,0 +1,148 @@
+{
+  "Comment": "Kinglet review pipeline (SPEC.md §3, §5.8). Prepare -> Reviewer -> Finalize, with every state caught into Finalize in failure mode so a PR is never left silently unreviewed.",
+  "StartAt": "Prepare",
+  "TimeoutSeconds": 1200,
+  "States": {
+    "Prepare": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${PrepareFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "out.$": "$.Payload"
+      },
+      "OutputPath": "$.out",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException",
+                          "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "FinalizeFailure"
+        }
+      ],
+      "Next": "HeadMoved?"
+    },
+
+    "HeadMoved?": {
+      "Comment": "§5.2 step 2. Dependabot rebased while we were starting; the next poll picks up the new SHA. Not a failure, so no comment and no label.",
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.status",
+          "StringEquals": "sha_moved",
+          "Next": "Abandoned"
+        }
+      ],
+      "Default": "Review"
+    },
+
+    "Abandoned": {
+      "Type": "Succeed",
+      "Comment": "Stale head SHA. The poller will re-enqueue with the current one."
+    },
+
+    "Review": {
+      "Comment": "Phase 1 runs a stub Lambda that echoes the floor. Phase 2 replaces this state with ecs:runTask.sync against the Tier 2 container (§5.3).",
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ReviewerFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "out.$": "$.Payload"
+      },
+      "OutputPath": "$.out",
+      "TimeoutSeconds": 660,
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException",
+                          "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "FinalizeFailure"
+        }
+      ],
+      "Next": "Finalize"
+    },
+
+    "Finalize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${FinalizeFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "out.$": "$.Payload"
+      },
+      "OutputPath": "$.out",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException",
+                          "Lambda.SdkClientException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "FinalizeFailure"
+        }
+      ],
+      "End": true
+    },
+
+    "FinalizeFailure": {
+      "Comment": "§5.8. Posts 'could not complete this review', sets risk:high, and records the review key with status=failed so the poller does not loop. Reached from any state, including a Finalize that itself failed.",
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${FinalizeFunctionArn}",
+        "Payload": {
+          "mode": "failure",
+          "repo.$": "$.repo",
+          "pr.$": "$.pr",
+          "installation_id.$": "$.installation_id",
+          "review_key.$": "$.review_key",
+          "head_sha.$": "$.head_sha",
+          "error.$": "$.error"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "Failed"
+    },
+
+    "Failed": {
+      "Type": "Fail",
+      "Comment": "The review did not complete. The PR carries risk:high and a failure comment; the alarm on execution failures fires from here."
+    }
+  }
+}
