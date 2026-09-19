@@ -7,7 +7,7 @@ Probe image: `node:24-slim` + `npm i -g openclaw@2026.9.5`.
 |---|---|
 | S1 — headless agent returns parseable JSON | **blocked** (needs a model; see Blocker) |
 | S2 — Bedrock via task-role creds, no internet | **blocked** (see Blocker) |
-| S3 — deny posture passes `doctor --lint`; red-team fails | **partial** — `--lint` confirmed to exist; posture unverified |
+| S3 — deny posture passes lint; red-team fails | **static half PASSES** — posture built, gated in-build, negative-tested. Red-team half still blocked on a model. |
 | S4 — guardrail attachment supported or ruled out | **provisionally ruled out** — see F9 |
 
 ---
@@ -146,3 +146,114 @@ gate.
   local builds match the runtime, so this should be decided before the Dockerfile
   is pinned.
 - **Node upper bound.** `<25` means Node 25 is excluded outright. Pin by digest.
+
+
+---
+
+# Round 2 — the posture, built and gated
+
+The hardened config (`reviewer/openclaw/openclaw.json`), the build-time gate
+(`reviewer/policy_gate.py`) and the image (`reviewer/Dockerfile`, ARM64, base
+pinned by digest) now exist. **The image builds and the gate passes in-build.**
+
+## F12 — `openclaw security audit` is the real gate, not `doctor --lint`
+
+Undocumented in the spec. `openclaw security audit --json` emits stable
+`checkId`s with severities, plus an attack-surface summary line. That is
+machine-checkable in a way `doctor --lint` prose is not, so the gate is built on
+it. §8 should name both.
+
+## F13 — `config validate` is schema-only and will not catch a typo'd tool name
+
+Proven: a config with `tools.deny: ["not_a_real_tool_xyz"]` and
+`tools.allow: ["also_fake_abc"]` reports **"Config valid"**.
+
+It does catch type errors (`tools.web.fetch` must be an object, not a boolean)
+and unknown *top-level* keys — a `$comment` key was rejected outright, so the
+config cannot carry inline comments.
+
+The consequence is the important part: a one-character typo in `tools.deny`
+validates cleanly while silently granting the tool. The gate therefore asserts
+the posture from the parsed config itself and cross-checks against the audit,
+rather than trusting `validate`.
+
+## F14 — `tools.allow` does NOT disable elevated tools or browser control
+
+The most security-relevant finding of the round. With
+`tools.allow: ["mcp__fs_readonly__*"]` — §8's stated posture, an "absolute
+allowlist" per its own schema docs — the audit still reported:
+
+```
+tools.elevated: enabled
+browser control: enabled
+```
+
+Both need their own explicit switches:
+
+```json
+"tools":   { "elevated": { "enabled": false },
+             "web": { "fetch": { "enabled": false }, "search": { "enabled": false } } },
+"browser": { "enabled": false }
+```
+
+With those set, the audit confirms `tools.elevated: disabled` and
+`browser control: disabled`. §8's tool posture as written would have shipped an
+agent with elevated tools and browser wiring live.
+
+## F15 — the openclaw state dir cannot live under `/work`
+
+openclaw writes state even during a read-only audit:
+
+```
+EACCES: permission denied, mkdir '/work/.openclaw/state'
+```
+
+§5.3 step 1 has the entrypoint run `chmod -R a-w /work` after extracting the
+bundle. Had the state dir stayed under `/work`, **every openclaw invocation in
+the reviewer would have failed at runtime.**
+
+The image puts state at `/state` instead. This changes §9: the task definition
+needs **two** tmpfs mounts, `/work` and `/state`, not one.
+
+## F16 — the audit enforces file permissions, so the image must set them
+
+Two findings appeared purely from default permissions:
+
+| Finding | Severity | Fix in the image |
+|---|---|---|
+| `fs.config.perms_world_readable` | critical | `chmod 600` the config |
+| `fs.state_dir.perms_readable` | warn | `chmod 700 /state` |
+
+Both are now done in the Dockerfile.
+
+## F17 — the vendor's stated trust model is not ours
+
+The audit's own summary says:
+
+> trust model: personal assistant (one trusted operator boundary), **not hostile
+> multi-tenant** on one shared gateway.
+
+Kinglet deliberately runs OpenClaw against hostile input. That is not a reason to
+change course — §3 already assumes the reviewer may be fully compromised and
+contains it with no credentials, no network route, a read-only bundle and a
+strictly validated output — but it does mean **OpenClaw's tool denial must be
+treated as defense in depth, never as the boundary**. Worth stating in §4.
+
+## The gate is not vacuous
+
+Three tampered configs, all caught:
+
+| Tamper | Caught by |
+|---|---|
+| `tools.elevated.enabled` flipped to `true` | the config assertion *and* the audit summary check, independently |
+| `exec` misspelled `exce` in the deny list (the F13 failure mode) | the deny-list assertion |
+| A second MCP server added | the single-server assertion |
+
+## Still open
+
+- S1, S2 and S3's red-team half remain blocked on the Bedrock verification hold.
+- The `group:` token question (F11) is now moot for the primary control: the
+  posture is built from explicit per-capability switches plus an allowlist, which
+  the audit verifies. The deny list stays as defense in depth.
+- `fs_readonly`, `entrypoint.py` and `prompt.md` are not yet written; the image
+  has a placeholder CMD.

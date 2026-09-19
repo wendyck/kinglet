@@ -1,0 +1,73 @@
+{
+  "tools": {
+    "allow": [
+      "mcp__fs_readonly__*"
+    ],
+    "deny": [
+      "exec",
+      "process",
+      "shell",
+      "bash",
+      "write",
+      "edit",
+      "apply_patch",
+      "multi_edit",
+      "web_fetch",
+      "web_search",
+      "browser",
+      "message_send",
+      "sessions_spawn",
+      "subagents",
+      "agent_to_agent",
+      "cron",
+      "automations",
+      "memory",
+      "memory_search",
+      "file_transfer",
+      "canvas",
+      "tts"
+    ],
+    "elevated": {
+      "enabled": false
+    },
+    "web": {
+      "fetch": {
+        "enabled": false
+      },
+      "search": {
+        "enabled": false
+      }
+    },
+    "fs": {
+      "workspaceOnly": true
+    }
+  },
+  "browser": {
+    "enabled": false
+  },
+  "telemetry": {
+    "enabled": false
+  },
+  "agents": {
+    "defaults": {
+      "sandbox": {
+        "workspaceAccess": "none"
+      },
+      "timeoutSeconds": 540
+    }
+  },
+  "mcp": {
+    "servers": {
+      "fs_readonly": {
+        "type": "stdio",
+        "command": "python3",
+        "args": [
+          "-m",
+          "fs_readonly",
+          "--root",
+          "/work"
+        ]
+      }
+    }
+  }
+}
