@@ -587,6 +587,13 @@ from them.
 - The labels are `risk:low` (green), `risk:medium` (yellow) and `risk:high` (red).
 - They are created once per repo by `scripts/setup_labels.sh`, using your own
   `gh` auth. That way the App doesn't need `issues: write`.
+- **Verify before relying on this (Phase 1).** Creating a label and *applying*
+  one are different calls: applying a label to a PR goes through the Issues API,
+  and whether an App holding only `pull_requests: write` may do so is ambiguous
+  in GitHub's documentation. Phase 1 must confirm a label actually lands with the
+  down-scoped token before its exit criterion depends on it. If it does not, add
+  `issues: write` to §10 — a small change, but one that widens the token Finalize
+  carries, so it should be a deliberate decision rather than a surprise.
 
 ---
 
@@ -768,6 +775,12 @@ but leave the tool denial as the reviewer's only exfiltration control.
 ## 10. GitHub App
 
 - **Name:** `kinglet-bot`. Owned by `wendyck`. Installed on *selected* repos only.
+- **Identity:** the App is its own identity. Creating it implicitly creates the
+  bot user `kinglet-bot[bot]`, and every comment and label Finalize writes is
+  authored by that bot, never by the owner's account. No separate machine-user
+  account is created, and no personal access token is ever used.
+- **Avatar:** `docs/assets/kinglet.png`, the same logo as the README, so review
+  comments are recognizable in a PR thread.
 - **Permissions:**
   - Metadata: read.
   - Contents: read.

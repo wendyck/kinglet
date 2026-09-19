@@ -1,6 +1,6 @@
-<img src="docs/assets/kinglet.png" alt="A golden-crowned kinglet wearing a small backpack, perched on a branch" width="140" align="right">
-
 # kinglet
+
+<img src="docs/assets/kinglet.png" alt="A golden-crowned kinglet wearing a small backpack, perched on a branch" width="140" align="right">
 
 Automated, security-conscious triage of Dependabot pull requests.
 
