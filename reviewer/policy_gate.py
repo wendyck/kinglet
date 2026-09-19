@@ -133,12 +133,26 @@ def check_plugins() -> None:
     else:
         ok("plugins.allow restricts loading to the Bedrock provider")
 
-    disc = (cfg.get("plugins", {}).get("entries", {}).get("amazon-bedrock", {})
-            .get("config", {}).get("discovery", {}))
+    bedrock_cfg = (cfg.get("plugins", {}).get("entries", {})
+                   .get("amazon-bedrock", {}).get("config", {}))
+
+    disc = bedrock_cfg.get("discovery", {})
     if disc.get("enabled") is not False:
         fail("Bedrock model discovery must be disabled; it calls the catalog API at runtime")
     else:
         ok("Bedrock model discovery is off (the model is pinned in config)")
+
+    # The provider-level guardrail is the first of two passes; Finalize's
+    # ApplyGuardrail on the output remains authoritative (§7.2).
+    gr = bedrock_cfg.get("guardrail", {})
+    if not gr.get("guardrailIdentifier"):
+        fail("no Bedrock guardrail attached to the provider")
+    elif gr.get("guardrailVersion") in (None, "", "DRAFT"):
+        fail(f"guardrail must be pinned to a published version, got {gr.get('guardrailVersion')!r}")
+    elif gr.get("streamProcessingMode") != "sync":
+        fail(f"guardrail streamProcessingMode must be 'sync', got {gr.get('streamProcessingMode')!r}")
+    else:
+        ok(f"guardrail {gr['guardrailIdentifier']} v{gr['guardrailVersion']} attached, sync mode")
 
 
 def check_security_audit() -> None:

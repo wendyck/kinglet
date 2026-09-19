@@ -4,7 +4,7 @@ Automated, security-conscious triage of Dependabot pull requests. Kinglet posts 
 comment per PR with a per-package risk matrix, and applies a `risk:low`,
 `risk:medium` or `risk:high` label.
 
-Status: **v3.2, design approved** (2026-09-19).
+Status: **v3.3, design approved** (2026-09-19).
 
 - v3.1 applied five corrections from the S5 spike
   (`docs/spikes/S5-dependabot-trailer.md`), confined to Tier 1 parsing and test
@@ -14,6 +14,11 @@ Status: **v3.2, design approved** (2026-09-19).
   Two were latent defects: §8's tool posture did not actually disable elevated
   tools or browser control (F14), and §5.3's state directory would have broken
   every reviewer run at runtime (F15).
+- v3.3 applies the round-3 findings, from wiring the reviewer end to end. The
+  headline is a **reversal**: Bedrock guardrail attachment *is* supported (F23),
+  so §8 now attaches one. Also §8's tool allowlist matched no tools at all as
+  written (F21), and `--isolated` would have discarded the hardened config
+  (F18).
 
 Decisions locked in this draft:
 
@@ -619,11 +624,39 @@ satisfy, and `reviewer/policy_gate.py` enforces them at build time.
 - **Provider:** Bedrock, using the container's task-role credentials and a pinned
   Claude inference profile in us-west-2. The bundled AWS SDK resolves
   `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, which is the ECS task-role mechanism
-  (F10). Guardrail attachment is **not supported** — no such key exists anywhere
-  in the config schema (F9) — so Finalize's `ApplyGuardrail` governs, as this
-  section already anticipated. The image must carry no
-  `AWS_BEARER_TOKEN_BEDROCK`, `AWS_BEDROCK_SKIP_AUTH` or static AWS credentials,
-  each of which could route around the task role.
+  (F10).
+
+  The provider requires four settings that §8 did not previously state (F24):
+
+  | Setting | Value |
+  |---|---|
+  | provider id | `amazon-bedrock` (not `bedrock`) |
+  | `auth` | `aws-sdk` — the SDK credential chain, i.e. the task role |
+  | `api` | `bedrock-converse-stream`; without it the provider falls back to OpenAI-compat and demands a base URL |
+  | `discovery.enabled` | `false` — discovery calls the Bedrock catalog API at runtime, and the model is pinned |
+
+  The provider ships as a **separate npm plugin**,
+  `@openclaw/amazon-bedrock-provider`, which openclaw will fetch from npm on
+  first use. In a container with no internet that fails the task, so the image
+  installs it at build time, pinned (F19).
+
+  The image must carry no `AWS_BEARER_TOKEN_BEDROCK`, `AWS_BEDROCK_SKIP_AUTH` or
+  static AWS credentials, each of which could route around the task role.
+
+- **Guardrail (two passes).** Contrary to v3.2, the Bedrock provider plugin
+  *does* support guardrail attachment — it ships its own config schema, which
+  openclaw's core schema does not include (F23). Kinglet therefore runs two
+  passes:
+
+  1. **At the provider**, via
+     `plugins.entries["amazon-bedrock"].config.guardrail`:
+     `guardrailIdentifier`, a **published** `guardrailVersion` (never `DRAFT`),
+     `streamProcessingMode: "sync"` and `trace: "enabled"`. This catches a hit
+     before the model's output is even assembled.
+  2. **At Finalize**, via `ApplyGuardrail` on the output (§7.2 step 4). This
+     remains **authoritative**: the reviewer container is untrusted, so a
+     guardrail configured inside it is defense in depth, not a control Tier 1
+     may rely on.
 
 - **File permissions:** config mode 600, state dir mode 700. openclaw's own audit
   raises these as critical and warn respectively (F16).
@@ -690,7 +723,7 @@ Adapted from the Renovate-review skill. The changes are:
 | VPC endpoints | Gateway: S3. Interface: `bedrock-runtime`, `ecr.api`, `ecr.dkr`, `logs`. |
 | S3 bucket | Prefixes `bundles/`, `meta/`, `results/`; 7-day lifecycle; bucket policy restricts reviewer access to the VPC endpoint |
 | Secrets Manager | `kinglet/github-app` = `{app_id, private_key}` |
-| Bedrock Guardrail | Prompt-attack filter (input), content filters plus denied topics (output), versioned |
+| Bedrock Guardrail | `kinglet-reviewer`, prompt-attack filter (input, HIGH), content filters plus two denied topics (output), published version pinned. Created in Phase 0 as `460y8sih9wtm` v1; Phase 1 moves ownership into the SAM stack. |
 | SNS topic + alarms | Step Functions failures, reviewer task failures, Bedrock spend |
 
 **IAM (least privilege):**
@@ -783,7 +816,7 @@ against the pinned OpenClaw version, and when:
 | S1 | `openclaw agent exec` runs headless in a container and returns parseable final JSON | open |
 | S2 | the Bedrock provider works via task-role credentials with **no internet** (endpoints only) | open |
 | S3 | the posture passes the policy gate, and a red-team prompt ("run `curl`", "read /proc/self/environ", "write a file") fails in every variant | **gate half done** — built, enforced in-build and negative-tested; red-team runs still open |
-| S4 | guardrail attachment is either supported or ruled out | **done** — ruled out (F9) |
+| S4 | guardrail attachment is either supported or ruled out | **done** — supported, and attached (F23). F9's "ruled out" was wrong: it read only openclaw's core schema, and the provider plugin ships its own. |
 | S5 | the Dependabot trailer is present and parseable on all 8 real PRs, including csa-wrangler range updates and Actions bumps | **done** — 8/8 |
 
 The Phase 0 red-team runs are the ones that matter most, and they are the ones
