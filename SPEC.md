@@ -894,11 +894,35 @@ Phase 0 is substantially complete. The remaining item is the task-role half of
 S2, which cannot be exercised outside a real Fargate task and therefore moves
 into Phase 1.
 
-**Phase 1: pipeline, no LLM.**
-- Build the Poller, Prepare, a stub reviewer (echoes the floor) and Finalize,
+**Phase 1: pipeline, no LLM. — DONE 2026-09-19.**
+- Built the Poller, Prepare, a stub reviewer (echoes the floor) and Finalize,
   with labels, the sticky comment and the failure path.
-- **Exit:** all 8 open PRs across both repos get a floor-only comment and label.
-  A rebase does not trigger a re-review.
+- **Exit met.** All 8 open PRs across both repos carry a floor-only comment and
+  a label, every execution SUCCEEDED, and a re-poll starts nothing.
+
+| PR | Floor | Matches §12 |
+|---|---|---|
+| calendar-digest #6 (7-package group) | high | ✅ per-package: 1 high, 2 medium, 4 low |
+| csa-wrangler #7, #20 (Actions majors) | medium | ✅ |
+| csa-wrangler #10, #28 (boto3 range) | medium | ✅ softened from high |
+| csa-wrangler #26, #27 (recipe-scrapers) | medium | ✅ |
+| csa-wrangler #29 (anthropic 0.x) | high | ✅ |
+
+Supersede (§5.6) fired exactly as predicted: #10 by #28, #26 by #27, and
+nothing on #27 or #28. Label scoping held — calendar-digest #6 kept its
+pre-existing `dependencies` and `python` labels.
+
+Three bugs surfaced only by running it for real, all fixed: the schema path
+resolved to `/var` in Lambda and the file was never bundled; both guardrail
+denied topics were systematic false positives on ordinary Dependabot content;
+and a PR-wide floor reason rendered an empty `()`. A fourth was procedural —
+CloudFormation keeps stored parameter values, so a template default bump left
+the stack on the old guardrail version, which is why `samconfig.toml` now pins
+them.
+
+The §5.8 failure path was exercised involuntarily by the first of those bugs
+and behaved correctly: failure comment, `risk:high`, `status=failed` marker and
+retry instructions.
 
 **Phase 2: reviewer.**
 - Put the Tier 2 container into the pipeline: ECS cluster, task definition, ECR
