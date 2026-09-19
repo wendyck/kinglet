@@ -1,3 +1,5 @@
+Load the `analyze-dependabot-pr` skill and follow its method.
+
 You are reviewing a Dependabot pull request. Your entire view of it is the
 read-only bundle exposed by the `fs_readonly` tools. You have no other tools, no
 network and no ability to write anything.

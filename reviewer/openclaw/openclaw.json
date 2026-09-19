@@ -42,6 +42,12 @@
     },
     "fs": {
       "workspaceOnly": true
+    },
+    "exec": {
+      "mode": "deny",
+      "applyPatch": {
+        "enabled": false
+      }
     }
   },
   "browser": {
@@ -55,7 +61,10 @@
       "sandbox": {
         "workspaceAccess": "none"
       },
-      "timeoutSeconds": 540
+      "timeoutSeconds": 540,
+      "skills": [
+        "analyze-dependabot-pr"
+      ]
     }
   },
   "mcp": {
@@ -109,6 +118,17 @@
           }
         }
       }
+    }
+  },
+  "skills": {
+    "load": {
+      "extraDirs": [
+        "/opt/kinglet/skills"
+      ],
+      "watch": false
+    },
+    "limits": {
+      "maxSkillsInPrompt": 4
     }
   }
 }

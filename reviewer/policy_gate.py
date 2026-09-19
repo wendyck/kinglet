@@ -93,6 +93,8 @@ def check_config_values() -> None:
 
     for path, expected in [
         (("tools", "elevated", "enabled"), False),
+        (("tools", "exec", "mode"), "deny"),
+        (("tools", "exec", "applyPatch", "enabled"), False),
         (("tools", "web", "fetch", "enabled"), False),
         (("tools", "web", "search", "enabled"), False),
         (("tools", "fs", "workspaceOnly"), True),
@@ -114,6 +116,12 @@ def check_config_values() -> None:
     for required in ("exec", "process", "write", "edit", "apply_patch"):
         if required not in t.get("deny", []):
             fail(f"tools.deny is missing {required!r}")
+
+    skills = cfg.get("agents", {}).get("defaults", {}).get("skills")
+    if skills != ["analyze-dependabot-pr"]:
+        fail(f"agents.defaults.skills must be exactly ['analyze-dependabot-pr'], got {skills!r}")
+    else:
+        ok("skills allowlist is the one review skill")
 
     servers = cfg.get("mcp", {}).get("servers", {})
     if set(servers) != {"fs_readonly"}:

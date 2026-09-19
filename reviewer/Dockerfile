@@ -51,6 +51,7 @@ COPY policy_gate.py          /opt/kinglet/policy_gate.py
 COPY prompt.md               /opt/kinglet/prompt.md
 COPY entrypoint.py           /opt/kinglet/entrypoint.py
 COPY fs_readonly/            /opt/kinglet/fs_readonly/
+COPY skills/                 /opt/kinglet/skills/
 
 # The security audit flags a world-readable config as critical, and it is right
 # to: a config can carry tokens. Ours must be readable only by the run user.
