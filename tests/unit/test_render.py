@@ -236,3 +236,32 @@ def test_pr_wide_floor_reason_renders_without_empty_parens():
     assert "()" not in line
     assert describe("PROMPT_ATTACK_SUSPECTED") in line
     assert "(`anthropic`)" in line
+
+
+# ── the reviewer's envelope parsing (reviewer/entrypoint.py) ─────────────────
+
+
+def test_agent_reply_text_reads_the_final_key():
+    """`openclaw agent exec --json` puts the reply in `final`. Missing that key
+    cost two live Fargate runs: the fallback returned the whole envelope, which
+    parses as JSON but has no `packages`, so every attempt looked like a model
+    failure."""
+    # entrypoint.py imports safe_tar as a top-level module, the way it is laid
+    # out inside the image.
+    sys.path.insert(0, str(ROOT / "src" / "common"))
+    sys.path.insert(0, str(ROOT / "reviewer"))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "kinglet_entrypoint", ROOT / "reviewer" / "entrypoint.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["kinglet_entrypoint"] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except ImportError as e:  # boto3 is a Lambda/container dep, not a test dep
+        pytest.skip(f"reviewer deps not importable: {e}")
+
+    envelope = json.dumps({"ok": True, "status": "ok",
+                           "final": '```json\n{"packages": [], "notes": ""}\n```'})
+    text = mod.agent_reply_text(envelope)
+    assert text.startswith("```json")
+    assert mod.extract_json(text) == {"packages": [], "notes": ""}

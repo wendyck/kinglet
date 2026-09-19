@@ -146,7 +146,9 @@ def agent_reply_text(envelope_stdout: str) -> str:
         env_obj = json.loads(envelope_stdout)
     except json.JSONDecodeError:
         return envelope_stdout
-    for key in ("result", "text", "message", "reply", "output", "content"):
+    # "final" is what `openclaw agent exec --json` actually uses. The rest are
+    # fallbacks in case a future version renames it.
+    for key in ("final", "result", "text", "message", "reply", "output", "content"):
         v = env_obj.get(key) if isinstance(env_obj, dict) else None
         if isinstance(v, str) and v.strip():
             return v
