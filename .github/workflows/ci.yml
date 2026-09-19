@@ -1,0 +1,79 @@
+name: ci
+
+# §13 Q1 made these load-bearing. Deferring the VPC endpoints left tool denial
+# as the primary exfiltration control, so the checks that prove containment have
+# to run on every change rather than when someone remembers.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r src/requirements.txt -r reviewer/requirements.txt \
+                      boto3 pytest pyflakes
+
+      - name: Lint
+        run: python -m pyflakes src/ tests/ scripts/replay.py
+
+      - name: Unit tests
+        run: python -m pytest tests/unit -q
+
+      # Runs every adversarial corpus case through the sanitizer and the
+      # renderer and asserts nothing live survives. No model and no AWS needed,
+      # which is exactly why it can gate every push.
+      - name: Containment — sanitizer and renderer
+        run: python -m pytest tests/unit/test_sanitize.py tests/unit/test_render.py -q
+
+      - name: Containment — the fs-readonly jail
+        run: python -m pytest tests/unit/test_fs_readonly.py -q
+
+      - name: Replay every real fixture, floor only
+        run: python scripts/replay.py --all --no-model
+
+  posture:
+    # The build-time policy gate is the other half: it fails the image build if
+    # the tool surface drifts. Running it here means a config change is caught
+    # in review rather than at deploy.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the reviewer image (the policy gate runs inside it)
+        run: |
+          mkdir -p reviewer/vendor
+          cp src/common/safe_tar.py reviewer/vendor/safe_tar.py
+          docker build -t kinglet-reviewer:ci reviewer/
+
+      - name: The gate must reject a tampered posture
+        run: |
+          set -e
+          python - <<'PY'
+          import json, pathlib
+          cfg = json.loads(pathlib.Path("reviewer/openclaw/openclaw.json").read_text())
+          cfg["tools"]["elevated"]["enabled"] = True
+          pathlib.Path("/tmp/tampered.json").write_text(json.dumps(cfg))
+          PY
+          chmod 600 /tmp/tampered.json
+          if docker run --rm -v /tmp:/t:ro -e OPENCLAW_CONFIG_PATH=/t/tampered.json \
+               --entrypoint python3 kinglet-reviewer:ci /opt/kinglet/policy_gate.py; then
+            echo "::error::the policy gate accepted a config with elevated tools enabled"
+            exit 1
+          fi
+          echo "gate correctly rejected the tampered config"
