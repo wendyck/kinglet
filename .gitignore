@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# SAM / build
+.aws-sam/
+samconfig.local.toml
+
+# Secrets — never commit App keys or tokens
+*.pem
+.env
+.env.*
+!.env.example
+
+# Local scratch
+*.tar.gz
+/tmp/
+.DS_Store

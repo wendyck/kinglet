@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/wendyck/kinglet/schemas/result.schema.json",
+  "title": "Kinglet reviewer output",
+  "description": "The single JSON object the Tier 2 reviewer returns (SPEC.md §7.1). Finalize validates against this schema, then cross-checks against meta per §7.2.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "overall_risk", "packages", "notes"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "overall_risk": { "$ref": "#/$defs/risk" },
+    "packages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": { "$ref": "#/$defs/package" }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 600,
+      "description": "Plain text. Sanitized and guardrailed by Finalize (§7.2) before rendering."
+    }
+  },
+  "$defs": {
+    "risk": { "enum": ["low", "medium", "high"] },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "directory", "risk", "verdict", "usage", "reason_codes", "evidence"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 214 },
+        "directory": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "risk": { "$ref": "#/$defs/risk" },
+        "verdict": { "enum": ["SAFE", "VERIFY", "DEAD", "MIGRATE", "UNKNOWN"] },
+        "usage": { "enum": ["used", "unused", "unknown"] },
+        "reason_codes": {
+          "type": "array",
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/reason_code" }
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/evidence" }
+        }
+      }
+    },
+    "reason_code": {
+      "description": "Closed enum (§7.1). SUPERSEDED_ELSEWHERE is set by Tier 1 only; the model never emits it, and Finalize rejects it here.",
+      "enum": [
+        "MAJOR_BUMP",
+        "ZERO_X_MINOR",
+        "NO_IMPORTS",
+        "IMPORT_ONLY_IN_SCRIPTS",
+        "API_REMOVED_IN_USE",
+        "DEPRECATION_IN_USE",
+        "CHANGELOG_BREAKING",
+        "CHANGELOG_SECURITY_FIX",
+        "ACTION_RUNTIME_CHANGE",
+        "RANGE_FLOOR_ONLY",
+        "SUPERSEDED_ELSEWHERE",
+        "INCONCLUSIVE"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "line"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "line": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+# Enrolled repositories (SPEC.md §2, §6).
+#
+# A repo is reviewed only if it appears BOTH here and in the GitHub App's
+# installation list (§5.1). Both must agree.
+#
+#   frameworks: any minor or major bump on these raises the floor to `high`
+#   watchlist:  a minor bump on these raises the floor to `medium`
+#
+# See §6 for the full floor table.
+
+repos:
+  wendyck/calendar-digest:
+    frameworks: [google-api-python-client, google-auth, boto3]
+    watchlist: [anthropic, requests]
+  wendyck/csa-wrangler:
+    frameworks: [boto3]
+    watchlist: [anthropic, recipe-scrapers, beautifulsoup4]
+
+defaults:
+  max_starts_per_run: 2
