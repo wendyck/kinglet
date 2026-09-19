@@ -4,7 +4,7 @@ Automated, security-conscious triage of Dependabot pull requests. Kinglet posts 
 comment per PR with a per-package risk matrix, and applies a `risk:low`,
 `risk:medium` or `risk:high` label.
 
-Status: **v3.3, design approved** (2026-09-19).
+Status: **v3.4, design approved** (2026-09-19).
 
 - v3.1 applied five corrections from the S5 spike
   (`docs/spikes/S5-dependabot-trailer.md`), confined to Tier 1 parsing and test
@@ -19,6 +19,11 @@ Status: **v3.3, design approved** (2026-09-19).
   so §8 now attaches one. Also §8's tool allowlist matched no tools at all as
   written (F21), and `--isolated` would have discarded the hardened config
   (F18).
+- v3.4 records S1, S2 and S3 passing, and splits the guardrail in two (F25). A
+  single provider-attached guardrail fired on every run — Kinglet's own prompt
+  discusses injection in order to warn the model about it — and blocking the turn
+  contradicts §5.2 step 7, which flags a hit and continues. Prompt-attack
+  detection therefore stays in Tier 1, where it raises the floor.
 
 Decisions locked in this draft:
 
