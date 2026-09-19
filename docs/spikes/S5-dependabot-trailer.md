@@ -37,8 +37,8 @@ So three of the eight fields must be derived elsewhere:
 
 - **`directory`** ← the path of the manifest the package appears in, from the
   changed-files list. This matters more than it looks: §5.6's supersede match rule
-  and §6's floor rules both key on directory, and §2 already notes that the same
-  package appears in different directories across PRs.
+  and §6's floor rules both key on directory, and getting it wrong flips supersede
+  verdicts in both directions — see F3.
 - **`from`** ← the `-` side of the manifest patch hunk.
 - **`ecosystem`** ← the manifest path (`.github/workflows/*.yml` → Actions;
   `requirements*.txt`, `pyproject.toml` → pip).
@@ -121,7 +121,7 @@ to key on the manifest path instead.
 
 ---
 
-## Proposed spec amendments
+## Spec amendments — **applied in SPEC.md v3.1**
 
 1. **§5.2 step 5** — rewrite the trailer contract: the trailer yields name,
    target, type and group; directory, `from` and ecosystem are derived from the
@@ -135,5 +135,6 @@ to key on the manifest path instead.
 5. **§6 / §8.1** — prefer manifest path over `dependency-type` when deciding
    production-vs-tooling impact.
 
-Nothing here touches the trust boundary, the tier split or the `max(floor, model)`
-rule. The changes are confined to Tier 1 parsing and to test expectations.
+All five landed in SPEC.md v3.1. Nothing here touches the trust boundary, the tier
+split or the `max(floor, model)` rule; the changes are confined to Tier 1 parsing
+and to test expectations.

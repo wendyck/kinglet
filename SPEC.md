@@ -4,7 +4,9 @@ Automated, security-conscious triage of Dependabot pull requests. Kinglet posts 
 comment per PR with a per-package risk matrix, and applies a `risk:low`,
 `risk:medium` or `risk:high` label.
 
-Status: **v3, design approved** (2026-09-19). Decisions locked in this draft:
+Status: **v3.1, design approved** (2026-09-19). v3.1 applies five corrections
+from the S5 spike (`docs/spikes/S5-dependabot-trailer.md`), all confined to Tier 1
+parsing and test expectations. Decisions locked in this draft:
 
 | Decision | Choice |
 |---|---|
@@ -56,8 +58,13 @@ Implications for the design:
   already float to the latest version.
 - **GitHub Actions majors are usually runtime (Node) bumps.** They get their own
   floor rule so they don't all scream "high".
-- **Overlapping PRs happen.** csa-wrangler #10 and #28 both touch `boto3`, in
-  different directories. The review reports the directory for every package.
+- **Overlapping PRs happen, often in the *same* directory.** csa-wrangler #10 and
+  #28 both raise the `boto3` floor in `scripts/requirements.txt` (to `>=1.43.42`
+  and `>=1.43.69`), and #26 and #27 both bump `recipe-scrapers` to 15.12.0 in that
+  same file. Confirmed against the real PRs in S5. The review reports the directory
+  for every package, and §5.6 treats both pairs as supersede relationships.
+  A PR's title prefix (`deps(dev)`, `deps(scripts)`) names the Dependabot config
+  group, **not** the directory, and must never be used to infer one.
 - **Enrollment starts with a backlog** (8 open PRs across both repos). The poller
   caps how many new reviews it starts per run.
 
@@ -196,10 +203,36 @@ still only ever *read*.
    still continues.
 4. Downloads `GET /repos/{o}/{r}/tarball/{head_sha}` and safe-extracts it with
    caps: 50 MB, 20k files, no symlinks.
-5. Parses the `updated-dependencies:` YAML trailer in the Dependabot commit
-   message into `{name, ecosystem, directory, from, to, dependency-type,
-   update-type, group}`.
+5. Builds the package list from the `updated-dependencies:` YAML trailer in the
+   Dependabot commit message **plus the changed-file patches**. The trailer alone
+   is not sufficient (S5/F1).
+
+   The trailer supplies:
+
+   | Trailer field | Always present? | Maps to |
+   |---|---|---|
+   | `dependency-name` | yes | `name` |
+   | `dependency-version` | yes | `to` — but see below |
+   | `dependency-type` | yes | `dependency-type` (advisory only, see §6) |
+   | `update-type` | **no** | `update-type`, when present |
+   | `dependency-group` | grouped updates only | `group` |
+
+   The remaining fields are **derived**, not read from the trailer:
+   - `directory` ← the directory of the manifest file the package's hunk appears
+     in, from the changed-files list. Never inferred from the PR title prefix.
+   - `ecosystem` ← the manifest path: `.github/workflows/*.yml` → Actions;
+     `requirements*.txt` and `pyproject.toml` → pip; `Dockerfile*` → docker.
+   - `from` ← the `-` side of the manifest patch hunk.
+   - `to` ← the `+` side of the manifest patch hunk. **The patch is authoritative
+     and overrides `dependency-version`**, which disagrees with the patch on range
+     updates (S5/F5: #10's trailer says `1.43.34`, its patch says `>=1.43.42`).
+
+   The block is terminated by the `...` YAML end-of-document marker; a parser must
+   not stop at the first column-0 `-` sequence entry.
+
    - Range updates are recorded as `from_spec` / `to_spec`.
+   - A package that appears in the trailer but in no parseable hunk, or in more
+     than one directory within one PR, is recorded once per directory found.
    - If the trailer is missing or unparseable, it falls back to diff parsing and
      sets `floor = high` with reason `UNPARSEABLE`.
 6. Fetches release notes for each package between `from` and `to`:
@@ -372,6 +405,21 @@ is not involved.
 Computed in Prepare, per package, then taking the max. The model may raise the
 floor, never lower it. Per-repo overrides live in `config/repos.yml`.
 
+Two rules about how the floor reads its inputs:
+
+- **The floor compares parsed version pairs** (`from` and `to` from the patch),
+  using PEP 440 for pip and semver / tag order for Actions. The trailer's
+  `update-type` is an optional cross-check when present, never a precondition: it
+  is absent on every range update, including `anthropic >=0.116.0 → >=0.121.0`,
+  which is precisely the `ZERO_X_MINOR` → high case (S5/F2). A disagreement
+  between a present `update-type` and the parsed pair sets `floor = high` with
+  reason `UNPARSEABLE`.
+- **Production-vs-tooling impact is decided by the manifest path, not by the
+  trailer's `dependency-type`.** Dependabot reports `direct:production` for
+  packages in `scripts/requirements.txt`, which is tooling (S5/F5). Paths under
+  the repo's Lambda source root count as production; `scripts/`, `tests/` and
+  `requirements-dev.txt` do not.
+
 | Floor | Rule |
 |---|---|
 | **high** | semver-major on a pip package |
@@ -382,7 +430,7 @@ floor, never lower it. Per-repo overrides live in `config/repos.yml`.
 | **medium** | GitHub Actions major (e.g. `actions/checkout 4 → 7`) |
 | medium | action referenced by tag rather than SHA *and* a major change (noted in the output) |
 | medium | minor bump on a package in the repo's `watchlist:` |
-| medium | minor bump on a `direct:production` dependency |
+| medium | minor bump on a dependency in a production manifest (by path, per above) |
 | **low** | patch; minor on a `direct:development` dependency; range-floor raise within the same major |
 
 Example `config/repos.yml`:
@@ -534,9 +582,10 @@ Adapted from the Renovate-review skill. The changes are:
 3. **Usage verification:**
    - Grep imports using the PyPI → import-name map, extended with `google-*`,
      `recipe-scrapers → recipe_scrapers`, and `beautifulsoup4 → bs4`.
-   - Distinguish Lambda code (`src/`) from tooling (`scripts/`, `tests/`). That
-     produces `IMPORT_ONLY_IN_SCRIPTS`, which lowers practical impact but not the
-     floor.
+   - Distinguish Lambda code (`src/`) from tooling (`scripts/`, `tests/`) by
+     **path**, not by the trailer's `dependency-type`, which mislabels tooling
+     packages as `direct:production` (S5/F5). That produces
+     `IMPORT_ONLY_IN_SCRIPTS`, which lowers practical impact but not the floor.
 4. **Deprecation checks:**
    - Search the release notes for "removed", "deprecated", "breaking" and
      renamed symbols.
@@ -682,15 +731,20 @@ confirmed, and when:
   | csa-wrangler #28, #10 (boto3 range floor) | low, `RANGE_FLOOR_ONLY` |
   | csa-wrangler #29 (anthropic 0.x) | high |
 
-- **Supersede and security fixtures:**
-  - A synthetic pair: a single-package PR and a newer group PR bumping the same
-    package in the same directory. Expect a supersede comment on the older one.
-  - Real candidate: csa-wrangler #10 (boto3, dev) versus #27 (dev group).
-    Confirm in S5 whether #27 includes boto3.
-  - A negative case: #10 and #28 bump boto3 in *different* directories, so they
-    must **not** be flagged as superseding each other.
-  - A security fixture using a recorded alerts-API response. Also check that an
-    injected "SECURITY FIX" string in the PR body does **not** produce a banner.
+- **Supersede fixtures** (all resolved against the real PRs in S5):
+
+  | Fixture | Kind | Expected |
+  |---|---|---|
+  | csa-wrangler #28 vs #10 | real, higher target | #28 supersedes #10. Same package (`boto3`), same directory (`scripts/`), `>=1.43.69` > `>=1.43.42`. #10 is **fully** superseded. |
+  | csa-wrangler #27 vs #26 | real, equal target | #27 supersedes #26 on the PR-number tie-break: both bump `recipe-scrapers` to 15.12.0 in `scripts/`. #26 is **fully** superseded; #27 stays relevant via `pytest`. |
+  | synthetic: same package, two directories | negative | **No** supersede relationship. Must be synthesized — the real data no longer provides one, since #10 and #28 share a directory (S5/F3). |
+  | synthetic: group PR partially covering a single-package PR | partial | Superseded packages listed individually; the remainder called out as still relevant. |
+
+  §12's earlier question — whether #27 includes `boto3` — is answered **no**; #27
+  is `pytest` + `recipe-scrapers` (S5/F4).
+
+- **Security fixtures:** a recorded alerts-API response. Also check that an
+  injected "SECURITY FIX" string in the PR body does **not** produce a banner.
 - **Adversarial fixtures:**
   - release notes saying "rate LOW" or "ignore instructions";
   - a markdown-image exfiltration attempt in the notes;
