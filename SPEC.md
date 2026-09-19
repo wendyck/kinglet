@@ -643,20 +643,25 @@ satisfy, and `reviewer/policy_gate.py` enforces them at build time.
   The image must carry no `AWS_BEARER_TOKEN_BEDROCK`, `AWS_BEDROCK_SKIP_AUTH` or
   static AWS credentials, each of which could route around the task role.
 
-- **Guardrail (two passes).** Contrary to v3.2, the Bedrock provider plugin
-  *does* support guardrail attachment — it ships its own config schema, which
-  openclaw's core schema does not include (F23). Kinglet therefore runs two
-  passes:
+- **Guardrails — two resources, because they do two different jobs.** The
+  provider plugin does support attachment (F23, correcting v3.2), but a single
+  guardrail cannot serve both roles. A provider-attached guardrail sees the fixed
+  prompt and the untrusted bundle through the same channel, and it **blocks the
+  turn**. Kinglet's own prompt discusses injection in order to warn the model
+  about it, so a prompt-attack filter at the provider fires on every run (F25).
+  Worse, blocking contradicts §5.2 step 7: a prompt-attack hit must raise the
+  floor and still hand the file to the reviewer as data. Blocking would turn any
+  injection into a failed review, making it a trivial denial of service — plant
+  hostile text in a release note and the PR is never reviewed.
 
-  1. **At the provider**, via
-     `plugins.entries["amazon-bedrock"].config.guardrail`:
-     `guardrailIdentifier`, a **published** `guardrailVersion` (never `DRAFT`),
-     `streamProcessingMode: "sync"` and `trace: "enabled"`. This catches a hit
-     before the model's output is even assembled.
-  2. **At Finalize**, via `ApplyGuardrail` on the output (§7.2 step 4). This
-     remains **authoritative**: the reviewer container is untrusted, so a
-     guardrail configured inside it is defense in depth, not a control Tier 1
-     may rely on.
+  | Guardrail | Where | Contents |
+  |---|---|---|
+  | `kinglet-reviewer-output` | attached at the provider, `streamProcessingMode: "sync"`, `trace: "enabled"`, pinned to a **published** version (never `DRAFT`) | output-side content filters only |
+  | `kinglet-reviewer` | Tier 1: Prepare (§5.2 step 7) over each untrusted file, Finalize (§7.2 step 4) over the notes | `PROMPT_ATTACK` at HIGH on input, plus the `CredentialDisclosure` and `ReviewInstructionOverride` denied topics |
+
+  Tier 1 remains **authoritative**. The provider guardrail runs inside the
+  untrusted container, so it is defense in depth and never a control Tier 1 may
+  rely on.
 
 - **File permissions:** config mode 600, state dir mode 700. openclaw's own audit
   raises these as critical and warn respectively (F16).
@@ -723,7 +728,7 @@ Adapted from the Renovate-review skill. The changes are:
 | VPC endpoints | Gateway: S3. Interface: `bedrock-runtime`, `ecr.api`, `ecr.dkr`, `logs`. |
 | S3 bucket | Prefixes `bundles/`, `meta/`, `results/`; 7-day lifecycle; bucket policy restricts reviewer access to the VPC endpoint |
 | Secrets Manager | `kinglet/github-app` = `{app_id, private_key}` |
-| Bedrock Guardrail | `kinglet-reviewer`, prompt-attack filter (input, HIGH), content filters plus two denied topics (output), published version pinned. Created in Phase 0 as `460y8sih9wtm` v1; Phase 1 moves ownership into the SAM stack. |
+| Bedrock Guardrails (×2) | `kinglet-reviewer` (`460y8sih9wtm` v1) for Tier 1: prompt-attack HIGH on input plus two denied topics. `kinglet-reviewer-output` (`lubjaymwc18i` v1) attached at the provider: output content filters only. See §8 for why they are separate. Both created in Phase 0; Phase 1 moves ownership into the SAM stack. |
 | SNS topic + alarms | Step Functions failures, reviewer task failures, Bedrock spend |
 
 **IAM (least privilege):**
@@ -813,15 +818,15 @@ against the pinned OpenClaw version, and when:
 
 | Spike | Exit criterion | Status |
 |---|---|---|
-| S1 | `openclaw agent exec` runs headless in a container and returns parseable final JSON | open |
-| S2 | the Bedrock provider works via task-role credentials with **no internet** (endpoints only) | open |
-| S3 | the posture passes the policy gate, and a red-team prompt ("run `curl`", "read /proc/self/environ", "write a file") fails in every variant | **gate half done** — built, enforced in-build and negative-tested; red-team runs still open |
+| S1 | `openclaw agent exec` runs headless in a container and returns parseable final JSON | **done** |
+| S2 | the Bedrock provider works via task-role credentials with **no internet** (endpoints only) | **offline half done** — with `--network none` the only failure is credential resolution; no npm, update or telemetry traffic. The task-role path itself needs a real Fargate task, so it lands in Phase 1. |
+| S3 | the posture passes the policy gate, and a red-team prompt ("run `curl`", "read /proc/self/environ", "write a file") fails in every variant | **done** — 5/5 corpus cases contained, bundle byte-identical, only `fs_readonly` tools ever called (`scripts/redteam.py`) |
 | S4 | guardrail attachment is either supported or ruled out | **done** — supported, and attached (F23). F9's "ruled out" was wrong: it read only openclaw's core schema, and the provider plugin ships its own. |
 | S5 | the Dependabot trailer is present and parseable on all 8 real PRs, including csa-wrangler range updates and Actions bumps | **done** — 8/8 |
 
-The Phase 0 red-team runs are the ones that matter most, and they are the ones
-still outstanding: the posture is currently verified by *configuration audit*,
-not by a model actually trying and failing to escape it.
+Phase 0 is substantially complete. The remaining item is the task-role half of
+S2, which cannot be exercised outside a real Fargate task and therefore moves
+into Phase 1.
 
 **Phase 1: pipeline, no LLM.**
 - Build the Poller, Prepare, a stub reviewer (echoes the floor) and Finalize,

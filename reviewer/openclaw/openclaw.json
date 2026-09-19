@@ -102,7 +102,7 @@
             "region": "us-west-2"
           },
           "guardrail": {
-            "guardrailIdentifier": "460y8sih9wtm",
+            "guardrailIdentifier": "lubjaymwc18i",
             "guardrailVersion": "1",
             "streamProcessingMode": "sync",
             "trace": "enabled"
