@@ -1,0 +1,40 @@
+{
+  "base": {
+    "ref": "main",
+    "repo_full_name": "wendyck/csa-wrangler"
+  },
+  "changed_files": [
+    {
+      "additions": 1,
+      "deletions": 1,
+      "filename": "scripts/requirements.txt",
+      "patch": "@@ -4,4 +4,4 @@\n recipe-scrapers==15.11.0\n requests==2.34.2\n anthropic>=0.116.0            # vision OCR for import_cookbook.py\n-boto3>=1.34                # S3 upload of cookbook photos + corpus (import_cookbook.py)\n+boto3>=1.43.42                # S3 upload of cookbook photos + corpus (import_cookbook.py)",
+      "status": "modified"
+    }
+  ],
+  "commits": [
+    {
+      "author_login": "dependabot[bot]",
+      "message": "deps(dev): update boto3 requirement from >=1.34 to >=1.43.42\n\nUpdates the requirements on [boto3](https://github.com/boto/boto3) to permit the latest version.\n- [Release notes](https://github.com/boto/boto3/releases)\n- [Commits](https://github.com/boto/boto3/compare/1.34.0...1.43.42)\n\n---\nupdated-dependencies:\n- dependency-name: boto3\n  dependency-version: 1.43.34\n  dependency-type: direct:production\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>",
+      "sha": "923d10fb71f58617b5d0aa89499cfe93743cd06f"
+    }
+  ],
+  "head": {
+    "ref": "dependabot/pip/boto3-gte-1.43.34",
+    "repo_full_name": "wendyck/csa-wrangler",
+    "sha": "923d10fb71f58617b5d0aa89499cfe93743cd06f"
+  },
+  "pr": {
+    "body": "Updates the requirements on [boto3](https://github.com/boto/boto3) to permit the latest version.\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a href=\"https://github.com/boto/boto3/commit/088377051e18e38d0bfbdb9623144bf4794ca554\"><code>0883770</code></a> Merge branch 'release-1.43.42'</li>\n<li><a href=\"https://github.com/boto/boto3/commit/63e762f632d27ab0fd37cd1e071935334ba078e2\"><code>63e762f</code></a> Bumping version to 1.43.42</li>\n<li><a href=\"https://github.com/boto/boto3/commit/6dbb5928b0a9398554a270639521e2b9f9806a97\"><code>6dbb592</code></a> Add changelog entries from botocore</li>\n<li><a href=\"https://github.com/boto/boto3/commit/2f26e867cab8857daad09721cfd361712e69d9b2\"><code>2f26e86</code></a> Merge branch 'release-1.43.41'</li>\n<li><a href=\"https://github.com/boto/boto3/commit/1fa249c3d77d7a6f73f4a78d499eb8b10fe465d8\"><code>1fa249c</code></a> Merge branch 'release-1.43.41' into develop</li>\n<li><a href=\"https://github.com/boto/boto3/commit/6221d17e3c25b993f4c5ccd84fb6772b8007dff8\"><code>6221d17</code></a> Bumping version to 1.43.41</li>\n<li><a href=\"https://github.com/boto/boto3/commit/ce6f6794f561fc346f5ac5e51aa88daf32942763\"><code>ce6f679</code></a> Add changelog entries from botocore</li>\n<li><a href=\"https://github.com/boto/boto3/commit/7b4354e729a81193e051ba6e3148a9d28b29083e\"><code>7b4354e</code></a> Bump <a href=\"https://github.com/astral-sh/ruff-pre-commit\">https://github.com/astral-sh/ruff-pre-commit</a> (<a href=\"https://redirect.github.com/boto/boto3/issues/4808\">#4808</a>)</li>\n<li><a href=\"https://github.com/boto/boto3/commit/d63c33b0c4149ba2093c0986abcfe84397cf34fb\"><code>d63c33b</code></a> Bump actions/setup-python in the github-actions group (<a href=\"https://redirect.github.com/boto/boto3/issues/4807\">#4807</a>)</li>\n<li><a href=\"https://github.com/boto/boto3/commit/dd59a59bbd400538f20d03782991907321f3cac7\"><code>dd59a59</code></a> Merge branch 'release-1.43.40'</li>\n<li>Additional commits viewable in <a href=\"https://github.com/boto/boto3/compare/1.34.0...1.43.42\">compare view</a></li>\n</ul>\n</details>\n<br />\n",
+    "created_at": "2026-06-20T10:03:08Z",
+    "number": 10,
+    "state": "open",
+    "title": "deps(dev): update boto3 requirement from >=1.34 to >=1.43.42",
+    "updated_at": "2026-07-08T18:12:26Z"
+  },
+  "repo": "wendyck/csa-wrangler",
+  "user": {
+    "login": "dependabot[bot]",
+    "type": "Bot"
+  }
+}
