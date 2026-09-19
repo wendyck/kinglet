@@ -17,13 +17,15 @@ lint:
 # config/repos.yml is the source of truth (SPEC.md §11) but the Lambdas need it
 # inside the package, so it is copied in at build time rather than duplicated.
 build:
-	mkdir -p src/config
+	mkdir -p src/config src/schemas
 	cp config/repos.yml src/config/repos.yml
-	sam build --use-container --parameter-overrides ScheduleState=DISABLED
+	cp schemas/result.schema.json src/schemas/result.schema.json
+	sam build
 
+# Parameters come from samconfig.toml so a template default cannot drift away
+# from what is actually deployed.
 deploy: build
-	sam deploy --profile $(PROFILE) --region $(REGION) --stack-name $(STACK) \
-	  --capabilities CAPABILITY_IAM --resolve-s3 --no-confirm-changeset
+	sam deploy
 
 clean:
-	rm -rf .aws-sam src/config
+	rm -rf .aws-sam src/config src/schemas

@@ -16,11 +16,15 @@ Parameters:
     Type: String
     Default: "460y8sih9wtm"
     Description: >
-      Tier 1 guardrail: prompt-attack on input plus denied topics. Created by
-      hand in Phase 0; still to be adopted into this stack (SPEC.md §9).
+      Tier 1 guardrail over untrusted PR-derived text. Created by hand in
+      Phase 0; still to be adopted into this stack (SPEC.md §9).
   InputGuardrailVersion:
     Type: String
-    Default: "1"
+    Default: "2"
+    Description: >
+      v2 drops the two denied topics. They were systematic false positives:
+      Dependabot's own PR body lists @dependabot commands, and an SDK changelog
+      discusses api_key. The trained PROMPT_ATTACK filter judged both correctly.
   ScheduleState:
     Type: String
     Default: DISABLED

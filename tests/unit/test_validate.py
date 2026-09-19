@@ -193,3 +193,43 @@ def test_clean_notes_pass_the_guardrail_untouched():
 def test_floor_reason_summary_groups_by_code():
     summary = floor_reason_summary(META)
     assert summary == {"ZERO_X_MINOR": ["anthropic"]}
+
+
+# ── schema discovery ─────────────────────────────────────────────────────────
+
+
+def test_schema_resolves_in_a_repo_checkout():
+    from common.validate import _find_schema
+    assert _find_schema().is_file()
+
+
+def test_schema_resolves_beside_the_package(tmp_path, monkeypatch):
+    """The Lambda layout: common/ directly under /var/task, schemas/ beside it.
+
+    The first live run failed here — the old code resolved parents[2], which in
+    Lambda is /var.
+    """
+    pkg = tmp_path / "task"
+    (pkg / "common").mkdir(parents=True)
+    (pkg / "schemas").mkdir()
+    (pkg / "schemas" / "result.schema.json").write_text('{"type": "object"}')
+
+    import common.validate as v
+    monkeypatch.setattr(v, "__file__", str(pkg / "common" / "validate.py"))
+    assert v._find_schema() == pkg / "schemas" / "result.schema.json"
+
+
+def test_env_override_wins(tmp_path, monkeypatch):
+    schema = tmp_path / "custom.json"
+    schema.write_text('{"type": "object"}')
+    monkeypatch.setenv("KINGLET_SCHEMA", str(schema))
+    from common.validate import _find_schema
+    assert _find_schema() == schema
+
+
+def test_missing_schema_raises_a_clear_error(tmp_path, monkeypatch):
+    import common.validate as v
+    monkeypatch.setattr(v, "__file__", str(tmp_path / "a" / "b" / "validate.py"))
+    monkeypatch.delenv("KINGLET_SCHEMA", raising=False)
+    with pytest.raises(ResultRejected, match="not found"):
+        v._find_schema()

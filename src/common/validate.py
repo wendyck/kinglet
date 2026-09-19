@@ -18,13 +18,36 @@ drops to `UNKNOWN`. Wrong evidence means the analysis behind it is unreliable.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from .risk_floor import LOW, MEDIUM, worst
 from .sanitize import WITHHELD, sanitize_notes
 
-SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas" / "result.schema.json"
+def _find_schema() -> Path:
+    """Locate result.schema.json in both layouts.
+
+    Locally the file sits at the repo root, two levels above this module. In a
+    Lambda package there is no repo root — `common/` sits directly under
+    /var/task — so the build copies the schema in beside it. Resolving only the
+    repo layout is what broke the first live run: `parents[2]` was `/var`.
+    """
+    here = Path(__file__).resolve()
+    candidates = [
+        Path(os.environ["KINGLET_SCHEMA"]) if os.environ.get("KINGLET_SCHEMA") else None,
+        here.parents[1] / "schemas" / "result.schema.json",   # packaged
+        here.parents[2] / "schemas" / "result.schema.json",   # repo checkout
+    ]
+    for c in candidates:
+        if c and c.is_file():
+            return c
+    raise ResultRejected(
+        "result.schema.json not found; looked in "
+        + ", ".join(str(c) for c in candidates if c))
+
+
+SCHEMA_PATH = None  # resolved lazily by load_schema()
 
 # §7.1: Tier 1 sets this one, and the model must never claim it.
 TIER1_ONLY_CODES = {"SUPERSEDED_ELSEWHERE"}
@@ -55,7 +78,7 @@ class ValidatedResult:
 
 
 def load_schema() -> dict:
-    return json.loads(SCHEMA_PATH.read_text())
+    return json.loads(_find_schema().read_text())
 
 
 def validate_schema(result: dict) -> None:

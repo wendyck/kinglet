@@ -225,3 +225,14 @@ def test_reasons_are_ordered_by_significance():
     why = [l for l in out.splitlines() if l.startswith("| `anthropic`")][0]
     assert why.index(describe("ZERO_X_MINOR")) < why.index(describe("WATCHLIST"))
     assert why.index(describe("WATCHLIST")) < why.index(describe("RANGE_FLOOR_ONLY"))
+
+
+def test_pr_wide_floor_reason_renders_without_empty_parens():
+    """UNEXPECTED_CHANGE and PROMPT_ATTACK_SUSPECTED apply to the PR, not to a
+    package, so they have no names to list."""
+    out = render(floor_reasons={"PROMPT_ATTACK_SUSPECTED": [],
+                                "ZERO_X_MINOR": ["anthropic"]})
+    line = [l for l in out.splitlines() if l.startswith("**Floor reasons:**")][0]
+    assert "()" not in line
+    assert describe("PROMPT_ATTACK_SUSPECTED") in line
+    assert "(`anthropic`)" in line

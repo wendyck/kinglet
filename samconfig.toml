@@ -1,0 +1,30 @@
+# Pinned deploy parameters.
+#
+# CloudFormation keeps a stack's stored parameter values; changing a default in
+# template.yaml does not move an existing stack. That silently left the input
+# guardrail on v1 after v2 was published, so the values live here explicitly.
+
+version = 0.1
+
+[default.global.parameters]
+stack_name = "kinglet"
+region = "us-west-2"
+profile = "kinglet"
+
+[default.build.parameters]
+use_container = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = false
+fail_on_empty_changeset = false
+parameter_overrides = [
+  "ScheduleState=DISABLED",
+  "InputGuardrailId=460y8sih9wtm",
+  "InputGuardrailVersion=2",
+  "MaxStartsPerRun=2",
+  "MaxStartsPerDay=25",
+  "DailyBedrockBudgetUSD=5",
+  "MonthlyBedrockBudgetUSD=40",
+]

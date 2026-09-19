@@ -178,11 +178,17 @@ def render_comment(
     parts.append("")
 
     if floor_reasons:
-        summary = ", ".join(
-            f"{describe(code)} ({', '.join(code_span(n) for n in sorted(names))})"
-            for code in order_reasons(floor_reasons)
-            for names in [floor_reasons[code]]
-        )
+        # A PR-wide reason (UNEXPECTED_CHANGE, PROMPT_ATTACK_SUSPECTED) names no
+        # package, so it renders without the empty parenthetical.
+        parts_ = []
+        for code in order_reasons(floor_reasons):
+            names = floor_reasons[code]
+            if names:
+                parts_.append(f"{describe(code)} "
+                              f"({', '.join(code_span(n) for n in sorted(names))})")
+            else:
+                parts_.append(describe(code))
+        summary = ", ".join(parts_)
         parts.append(f"**Floor reasons:** {summary}")
 
     if supersedes:
