@@ -21,3 +21,6 @@ samconfig.local.toml
 *.tar.gz
 /tmp/
 .DS_Store
+
+# local dev venv
+.venv/

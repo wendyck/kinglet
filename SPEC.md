@@ -493,6 +493,31 @@ Two rules about how the floor reads its inputs:
 | medium | minor bump on a dependency in a production manifest (by path, per above) |
 | **low** | patch; minor on a `direct:development` dependency; range-floor raise within the same major |
 
+### Open: range-floor precedence
+
+§6's table and §12's fixture expectations currently contradict each other on
+three real PRs. Implemented literally, with the floor being the max of every
+applicable rule:
+
+| PR | §12 expects | §6 computes | Why |
+|---|---|---|---|
+| csa-wrangler #10 | `low` | **`high`** | `boto3` is on csa-wrangler's `frameworks:` list and `>=1.34 → >=1.43.42` is a minor bump |
+| csa-wrangler #28 | `low` | **`high`** | same, `>=1.34 → >=1.43.69` |
+| csa-wrangler #26 | `low` | **`medium`** | `recipe-scrapers` is on the `watchlist:` and 15.11.0 → 15.12.0 is a minor bump |
+
+The case for §12 is §2's own reasoning: a `>=` floor raise does not change what
+a build resolves, because the build already floats to the latest version. On
+that reading `RANGE_FLOOR_ONLY` should **cap** the floor at `low` for a
+same-major raise, rather than being recorded alongside a higher level.
+
+The case against is that `frameworks:` exists precisely to make `boto3` changes
+loud, and capping means a framework bump expressed as a range is silently `low`.
+
+**Pending a decision, the implementation follows §6** — the conservative
+reading, since a floor that is too high is a nuisance and a floor that is too
+low is a missed finding. `tests/unit/test_risk_floor.py` pins the current
+behaviour explicitly so whichever way this resolves, the change is deliberate.
+
 Example `config/repos.yml`:
 
 ```yaml
