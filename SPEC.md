@@ -351,9 +351,24 @@ fails the build instead of executing silently.
 4. Puts the result to `results/<exec>.json` and exits 0. It exits non-zero on
    error, which triggers the Step Functions Catch.
 
-**Limits:** 1 vCPU and 2 GB; 10-minute task timeout; `--timeout 540` on the agent
-turn so it fails inside the task rather than being killed; OpenClaw max turns of
-about 40; per-response output token cap.
+**Limits:** 1 vCPU and **4 GB**; 10-minute task timeout; `--timeout 540` on the
+agent turn so it fails inside the task rather than being killed; OpenClaw max
+turns of about 40; per-response output token cap.
+
+The memory figure was 2 GB until Phase 2 ran the container for real. On Fargate
+a tmpfs is backed by task memory, so `/work` + `/state` + `/tmp` are subtracted
+from what the runtime actually gets, and 2 GB left OpenClaw failing with
+`ENOSPC` while loading its provider plugin.
+
+**Four things the container needs that are easy to miss** (all found by running
+it, none by testing the image locally):
+
+| Need | Why |
+|---|---|
+| `MountOptions: uid=10001,gid=10001` on every tmpfs | Fargate creates tmpfs mounts root-owned whatever the image sets, so the run user cannot write to them |
+| `HOME` and `XDG_CACHE_HOME` on the writable tmpfs | the root filesystem is read-only and OpenClaw needs a writable cache |
+| `plugins.load.paths` pointing at the installed provider | OpenClaw's plugin *index* lives in the state dir, which is a blank tmpfs on every task, so discovery must come from the filesystem instead of mutable state |
+| `/state` sized for the cache, not just for state | see the ENOSPC above |
 
 ### 5.4 fs-readonly MCP server
 Kinglet's own code, about 200 lines of Python using the `mcp` SDK, served over
@@ -777,7 +792,7 @@ Adapted from the Renovate-review skill. The changes are:
 | `AWS::Scheduler::Schedule` | rate(10 min) → Poller |
 | Poller, Prepare, Finalize | Python 3.13, **not** in a VPC (GitHub egress without NAT) |
 | `AWS::Serverless::StateMachine` | Standard; states Prepare → RunTask.sync → Finalize; Catch → Finalize(failure); 20 min timeout |
-| ECS cluster + task def + ECR repo | Fargate **ARM64**; `readonlyRootFilesystem`; **two** tmpfs mounts, `/work` and `/state` (F15) |
+| ECS cluster + task def + ECR repo | Fargate **ARM64**; `readonlyRootFilesystem`; **three** tmpfs mounts — `/work`, `/state` and `/tmp` — each with explicit `uid`/`gid` mount options (§5.3) |
 | VPC | 1 public subnet (single AZ), IGW, **no NAT**. The task takes a public IP and reaches Bedrock, ECR, S3 and Logs over their public endpoints (§13 Q1). |
 | VPC endpoints | **None.** Deferred, not rejected — see §13 Q1 for the trigger to add them back. |
 | S3 bucket | Prefixes `bundles/`, `meta/`, `results/`; 7-day lifecycle. Reviewer access is scoped by task-role IAM to `bundles/*` read and `results/*` write. |
