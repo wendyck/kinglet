@@ -14,6 +14,18 @@ Bedrock call and about a minute, instead of a deploy plus a Step Functions run.
 
 `--no-model` skips the container and echoes the floor, which exercises
 everything except the model itself and needs no Bedrock access at all.
+
+**What a replay does and does not prove.** The bundle is rebuilt from the
+snapshot, and a snapshot holds the PR's patches — not the repository. So
+`repo/` contains the changed manifests and nothing else, and the model has no
+source to grep. Verdicts from a replay are therefore meaningless: everything
+comes back `UNKNOWN`, or `DEAD` when the model correctly observes that a package
+it cannot see is not imported.
+
+A replay validates the *plumbing* — the package set matches, the schema holds,
+evidence validation and `max(floor, model)` behave, the comment renders. It does
+not validate the skill. For that, run the real pipeline, or drop a tree into
+`tests/fixtures/real/<fixture>-tree/` and it will be copied into `repo/`.
 """
 
 from __future__ import annotations

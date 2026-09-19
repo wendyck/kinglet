@@ -949,7 +949,12 @@ retry instructions.
   and an `ecs:runTask.sync` state. Both reviewers stay deployed and Prepare
   reports which to use, so the switch is a parameter and rollback is instant.
 - ✅ The `analyze-dependabot-pr` skill (§8.1).
-- ✅ `scripts/replay.py`, and the containment checks wired into CI
+- ✅ `scripts/replay.py` — with a caveat now documented in the script itself: a
+  snapshot holds patches, not the repository, so a replayed bundle has no source
+  to grep. Replays validate the plumbing (package set, schema, evidence
+  validation, `max(floor, model)`, rendering) and say nothing about the skill's
+  analysis. All 8 fixtures replay cleanly on that basis.
+- ✅ The containment checks wired into CI
   (`.github/workflows/ci.yml`), including a job that asserts the policy gate
   *rejects* a tampered posture — a gate that cannot fail is not a gate.
 - ✅ Budget guards, which landed early in Phase 1.
