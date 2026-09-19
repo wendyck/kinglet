@@ -587,13 +587,21 @@ from them.
 - The labels are `risk:low` (green), `risk:medium` (yellow) and `risk:high` (red).
 - They are created once per repo by `scripts/setup_labels.sh`, using your own
   `gh` auth. That way the App doesn't need `issues: write`.
-- **Verify before relying on this (Phase 1).** Creating a label and *applying*
-  one are different calls: applying a label to a PR goes through the Issues API,
-  and whether an App holding only `pull_requests: write` may do so is ambiguous
-  in GitHub's documentation. Phase 1 must confirm a label actually lands with the
-  down-scoped token before its exit criterion depends on it. If it does not, add
-  `issues: write` to §10 — a small change, but one that widens the token Finalize
-  carries, so it should be a deliberate decision rather than a surprise.
+- **Resolved 2026-09-19: `pull_requests: write` is sufficient.** Verified
+  against `csa-wrangler` #29 with a token scoped to that one repo and that one
+  permission. All four calls succeeded: list repo labels, apply a label to the
+  PR, remove it, and delete it from the repo. **No `issues: write` is needed**,
+  so §10's permission set stands as written.
+- Note that applying a label *creates* it if absent, with a GitHub-assigned
+  colour. `scripts/setup_labels.sh` is therefore about presentation, not
+  permission: it exists so the three labels get the intended green / yellow / red
+  and a description, rather than whatever colour the first apply happens to pick.
+  Kinglet works without it; the labels just look arbitrary.
+- Worth knowing for the threat model: the same permission lets the Finalize token
+  **delete** any label in the repo. That is inherent to `pull_requests: write` and
+  not separable. It is a small blast radius — labels are cheap to recreate — but
+  it is a capability Finalize holds, so §5.5's "remove any other `risk:*` label"
+  should stay narrowly scoped to the `risk:` prefix.
 
 ---
 
@@ -775,6 +783,8 @@ but leave the tool denial as the reviewer's only exfiltration control.
 ## 10. GitHub App
 
 - **Name:** `kinglet-bot`. Owned by `wendyck`. Installed on *selected* repos only.
+  App ID **5003415**, installation **163070921** (neither is a secret; the
+  private key is the only credential). Created and verified 2026-09-19.
 - **Identity:** the App is its own identity. Creating it implicitly creates the
   bot user `kinglet-bot[bot]`, and every comment and label Finalize writes is
   authored by that bot, never by the owner's account. No separate machine-user

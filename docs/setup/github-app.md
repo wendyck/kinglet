@@ -38,10 +38,10 @@ Repository permissions — set these four and nothing else:
 Subscribe to no events. Every permission here is the *ceiling*; each call mints a
 token narrowed further, to one repo and the one permission it needs.
 
-> **Known open question.** Applying a `risk:*` label to a PR goes through the
-> Issues API. Whether `pull_requests: write` alone is sufficient for an App is
-> ambiguous in GitHub's docs, so Phase 1 verifies it before depending on it. If a
-> label 403s, add **Issues: Read and write** here — see SPEC.md §7.4.
+> **Resolved 2026-09-19.** `pull_requests: write` is enough to list, apply,
+> remove *and* delete labels on a pull request — verified against
+> `csa-wrangler` #29 with a token scoped to that one repo and permission. Do not
+> add **Issues** access; it is not needed.
 
 ## 3. Avatar
 
@@ -86,12 +86,17 @@ Both the installation *and* `config/repos.yml` must list a repo before kinglet
 reviews it (§5.1). Two independent switches, so an accidental install does not
 start a review.
 
-## 6. Tell me when it's done
+## 6. Done — recorded here for reference
 
-Send over the **App ID** and confirm the installation. I do not need the private
-key — it should go from the download straight into Secrets Manager. I'll verify
-with a token mint and an installation list, which also settles the label
-permission question above.
+App ID **5003415**, installation **163070921**, installed on
+`wendyck/calendar-digest` and `wendyck/csa-wrangler`. The secret lives at
+`kinglet/github-app` in `220840683614`/us-west-2 as
+`{app_id, private_key}`.
+
+Verified end to end on 2026-09-19: the key signs a JWT that `GET /app`
+accepts; the App reports exactly the four permissions above with `events: none`;
+a Prepare-scoped token gets read-only access; a Finalize-scoped token gets
+`pull_requests: write` and no contents access.
 
 ## What this replaces
 
