@@ -4,7 +4,7 @@ Automated, security-conscious triage of Dependabot pull requests. Kinglet posts 
 comment per PR with a per-package risk matrix, and applies a `risk:low`,
 `risk:medium` or `risk:high` label.
 
-Status: **v3.5, design approved** (2026-09-19).
+Status: **v3.6, design approved** (2026-09-19).
 
 - v3.1 applied five corrections from the S5 spike
   (`docs/spikes/S5-dependabot-trailer.md`), confined to Tier 1 parsing and test
@@ -30,6 +30,10 @@ Status: **v3.5, design approved** (2026-09-19).
   primary exfiltration control, which makes the budget alarm, the CI red-team
   evals and the build-time policy gate load-bearing. §13 Q1 records the
   conditions for adding them back.
+- v3.6 records Phase 1 complete and Phase 2 substantially so, closes S2, and
+  corrects §5.3 and §9 from what the container actually needed at runtime —
+  4 GB rather than 2, three tmpfs mounts with explicit ownership, and plugin
+  discovery from the filesystem rather than from state.
 
 Decisions locked in this draft:
 
@@ -900,7 +904,7 @@ against the pinned OpenClaw version, and when:
 | Spike | Exit criterion | Status |
 |---|---|---|
 | S1 | `openclaw agent exec` runs headless in a container and returns parseable final JSON | **done** |
-| S2 | the Bedrock provider works via task-role credentials with **no internet** (endpoints only) | **offline half done** — with `--network none` the only failure is credential resolution; no npm, update or telemetry traffic. The task-role path itself needs a real Fargate task, so it lands in Phase 1. |
+| S2 | the Bedrock provider works via task-role credentials | **done** — closed in Phase 2. A real Fargate task authenticated to Bedrock through the ECS task role with no static credentials present. The offline half was already shown in Phase 0: with `--network none` the container's only failure is credential resolution, so there is no npm, update or telemetry traffic. The "no internet" clause itself was dropped when §13 Q1 was reversed. |
 | S3 | the posture passes the policy gate, and a red-team prompt ("run `curl`", "read /proc/self/environ", "write a file") fails in every variant | **done** — 5/5 corpus cases contained, bundle byte-identical, only `fs_readonly` tools ever called (`scripts/redteam.py`) |
 | S4 | guardrail attachment is either supported or ruled out | **done** — supported, and attached (F23). F9's "ruled out" was wrong: it read only openclaw's core schema, and the provider plugin ships its own. |
 | S5 | the Dependabot trailer is present and parseable on all 8 real PRs, including csa-wrangler range updates and Actions bumps | **done** — 8/8 |
@@ -939,17 +943,41 @@ The §5.8 failure path was exercised involuntarily by the first of those bugs
 and behaved correctly: failure comment, `risk:high`, `status=failed` marker and
 retry instructions.
 
-**Phase 2: reviewer.**
-- Put the Tier 2 container into the pipeline: ECS cluster, task definition, ECR
-  repository, a **public subnet with no NAT and no interface endpoints**
-  (§13 Q1), and the `ecs:runTask.sync` state that replaces Phase 1's stub.
-- Write the `analyze-dependabot-pr` skill (§8.1). The image, `fs_readonly`, the
-  policy gate, the sanitizer and both guardrails already exist from Phase 0.
-- Because tool denial is now the primary exfiltration control, this phase also
-  lands the **Bedrock budget alarm** and wires the red-team corpus into CI.
-- **Exit:** every real fixture produces a valid result; `replay.py` runs locally
-  against fixtures; the S2 task-role path is confirmed on a real Fargate task,
-  which is the half Phase 0 could not reach.
+**Phase 2: reviewer. — substantially done 2026-09-19.**
+- ✅ Tier 2 container in the pipeline: ECS cluster, task definition, ECR
+  repository, a public subnet with no NAT and no interface endpoints (§13 Q1),
+  and an `ecs:runTask.sync` state. Both reviewers stay deployed and Prepare
+  reports which to use, so the switch is a parameter and rollback is instant.
+- ✅ The `analyze-dependabot-pr` skill (§8.1).
+- ✅ `scripts/replay.py`, and the containment checks wired into CI
+  (`.github/workflows/ci.yml`), including a job that asserts the policy gate
+  *rejects* a tampered posture — a gate that cannot fail is not a gate.
+- ✅ Budget guards, which landed early in Phase 1.
+- ✅ **S2 closed.** csa-wrangler #29 reviewed end to end through Fargate: the
+  container authenticated to Bedrock via the task role with no static
+  credentials, found `anthropic` at three real call sites in
+  `scripts/import_cookbook.py`, reasoned that the retired Opus 4.1 models do not
+  apply because the code uses a current one, and returned `SAFE`. Evidence
+  validated against the file index, so the verdict stood. The floor still made
+  it `risk:high`.
+- **Remaining:** re-run the red-team corpus against the current posture, which
+  changed after S3 passed (`exec.mode: deny`, the skills allowlist).
+
+**What Phase 2 cost to get working.** Six bugs, none of which local testing
+found — every one needed a real Fargate task:
+
+| Bug | Why local testing missed it |
+|---|---|
+| `tarfile(filter=)` is 3.12+, the container is 3.11 | the duplicate extractor was never exercised locally |
+| tmpfs mounts are root-owned on Fargate | Docker's `--tmpfs` honoured the image's ownership |
+| `$HOME` unwritable under a read-only root | the local run was not read-only |
+| plugin index lives in a tmpfs wiped each task | the build-time state dir persisted in the image |
+| tmpfs is backed by task memory, so 2 GB was not enough | no memory limit locally |
+| the reply envelope key is `final` | the local spike read `final` directly and the code did not |
+
+The pattern is worth remembering for Phase 3: **local container testing catches
+configuration and posture errors; it does not catch runtime-environment
+assumptions.**
 
 **Phase 3: evals and hardening.**
 - **Real fixtures, expected outcomes:**
