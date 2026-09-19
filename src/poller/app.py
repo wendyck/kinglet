@@ -36,6 +36,11 @@ log = logging.getLogger()
 log.setLevel(logging.INFO)
 
 STATE_MACHINE_ARN = os.environ.get("KINGLET_STATE_MACHINE_ARN", "")
+# A hard ceiling on reviews per UTC day. AWS has no per-day Bedrock cost cap —
+# the per-day token quotas are AWS-set ceilings in the tens of millions and are
+# not adjustable — so this is the only control that bounds kinglet's own spend
+# in real time. Budgets are a lagging backstop; this is the cap.
+MAX_STARTS_PER_DAY = int(os.environ.get("KINGLET_MAX_STARTS_PER_DAY", "25"))
 CONFIG_PATH = os.environ.get("KINGLET_CONFIG", "config/repos.yml")
 BOT_LOGIN = "dependabot[bot]"
 
@@ -152,6 +157,37 @@ def candidates_for_repo(repo: str, *, token: str, bot_login: str) -> list[dict]:
     return sorted(out, key=lambda c: c["pr"])
 
 
+def executions_started_today(sfn, state_machine_arn: str, *, now=None) -> int:
+    """Count executions started since UTC midnight.
+
+    Read from Step Functions itself rather than a counter we maintain: there is
+    no state to drift, and a restarted or redeployed stack cannot accidentally
+    reset the day's tally to zero.
+    """
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    count = 0
+    token = None
+    for _ in range(20):  # page cap: 20 * 100 is far beyond any sane day
+        kwargs = {"stateMachineArn": state_machine_arn, "maxResults": 100}
+        if token:
+            kwargs["nextToken"] = token
+        page = sfn.list_executions(**kwargs)
+        for ex in page.get("executions", []):
+            if ex["startDate"] >= midnight:
+                count += 1
+            else:
+                # list_executions returns newest first, so the first older one
+                # means everything after it is older too.
+                return count
+        token = page.get("nextToken")
+        if not token:
+            break
+    return count
+
+
 def handler(event, context):  # noqa: ARG001
     cfg = load_config()
     enrolled = set((cfg.get("repos") or {}).keys())
@@ -162,6 +198,14 @@ def handler(event, context):  # noqa: ARG001
 
     app = gh.GitHubApp()
     sfn = boto3.client("stepfunctions")
+
+    today = executions_started_today(sfn, STATE_MACHINE_ARN)
+    budget_left = max(0, MAX_STARTS_PER_DAY - today)
+    if budget_left == 0:
+        log.warning("daily cap reached: %d executions started today (cap %d); "
+                    "starting nothing", today, MAX_STARTS_PER_DAY)
+        return {"started": [], "skipped": 0, "considered": 0,
+                "daily_cap_reached": True, "started_today": today}
 
     started, skipped, considered = [], 0, 0
 
@@ -176,7 +220,7 @@ def handler(event, context):  # noqa: ARG001
                 permissions={"contents": "read", "pull_requests": "read"})
             for cand in candidates_for_repo(repo, token=token, bot_login=bot_login):
                 considered += 1
-                if len(started) >= max_starts:
+                if len(started) >= min(max_starts, budget_left):
                     skipped += 1
                     continue
                 name = execution_name(repo, cand["pr"], cand["review_key"])
@@ -193,6 +237,7 @@ def handler(event, context):  # noqa: ARG001
                     skipped += 1
 
     result = {"started": started, "skipped": skipped, "considered": considered,
-              "max_starts": max_starts}
+              "max_starts": max_starts, "started_today": today + len(started),
+              "daily_cap": MAX_STARTS_PER_DAY}
     log.info("poll complete: %s", json.dumps(result))
     return result

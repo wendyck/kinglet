@@ -185,3 +185,54 @@ def test_failed_review_still_records_a_key_so_the_poller_does_not_loop():
     comments = [{"user": {"login": BOT},
                  "body": marker("deadbeef1234", "abc", "failed")}]
     assert reviewed_key(comments, BOT) == "deadbeef1234"
+
+
+# ── the daily spend cap (§13 Q1) ─────────────────────────────────────────────
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from poller.app import executions_started_today  # noqa: E402
+
+
+class FakeSFN:
+    """list_executions returns newest first, which the counter relies on."""
+
+    def __init__(self, start_dates):
+        self.pages = [sorted(start_dates, reverse=True)]
+        self.calls = 0
+
+    def list_executions(self, **kwargs):
+        self.calls += 1
+        return {"executions": [{"startDate": d} for d in self.pages[0]]}
+
+
+NOW = datetime(2026, 9, 19, 14, 0, tzinfo=timezone.utc)
+MIDNIGHT = NOW.replace(hour=0, minute=0)
+
+
+def test_counts_only_executions_since_utc_midnight():
+    sfn = FakeSFN([
+        MIDNIGHT + timedelta(hours=1),
+        MIDNIGHT + timedelta(hours=2),
+        MIDNIGHT - timedelta(minutes=5),      # yesterday
+        MIDNIGHT - timedelta(hours=10),       # yesterday
+    ])
+    assert executions_started_today(sfn, "arn", now=NOW) == 2
+
+
+def test_counts_zero_on_a_fresh_day():
+    sfn = FakeSFN([MIDNIGHT - timedelta(minutes=1)])
+    assert executions_started_today(sfn, "arn", now=NOW) == 0
+
+
+def test_stops_reading_at_the_first_older_execution():
+    """Newest-first ordering means one old entry ends the scan — a busy history
+    must not turn every poll into twenty API calls."""
+    sfn = FakeSFN([MIDNIGHT - timedelta(days=d) for d in range(1, 50)])
+    assert executions_started_today(sfn, "arn", now=NOW) == 0
+    assert sfn.calls == 1
+
+
+def test_an_execution_exactly_at_midnight_counts_as_today():
+    sfn = FakeSFN([MIDNIGHT])
+    assert executions_started_today(sfn, "arn", now=NOW) == 1

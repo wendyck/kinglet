@@ -31,6 +31,20 @@ Parameters:
   MaxStartsPerRun:
     Type: String
     Default: "2"
+  MaxStartsPerDay:
+    Type: String
+    Default: "25"
+    Description: >
+      Hard ceiling on reviews per UTC day, enforced in the poller. AWS has no
+      per-day Bedrock cost cap — the per-day token quotas are AWS-set ceilings
+      of tens of millions and are not adjustable — so this is the real-time
+      control. Budgets below are a lagging backstop, not a cap.
+  DailyBedrockBudgetUSD:
+    Type: String
+    Default: "5"
+  MonthlyBedrockBudgetUSD:
+    Type: String
+    Default: "40"
   BotLogin:
     Type: String
     Default: "kinglet-bot[bot]"
@@ -102,6 +116,103 @@ Resources:
       TopicName: kinglet-alerts
       DisplayName: kinglet
 
+  # AWS Budgets publishes from its own service principal, so the topic has to
+  # let it in explicitly.
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref AlertTopic]
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowBudgets
+            Effect: Allow
+            Principal:
+              Service: budgets.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: AllowCloudWatchAlarms
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # ── spend guards (§13 Q1) ──────────────────────────────────────────────────
+  #
+  # These are a *backstop*, not a cap. AWS cost data lags by hours, so a budget
+  # cannot stop spend as it happens; the poller's per-day execution ceiling is
+  # what does that. These catch what the poller cannot see — most importantly a
+  # leaked task-role credential invoking Bedrock from somewhere else.
+
+  DailyBedrockBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: kinglet-bedrock-daily
+        BudgetType: COST
+        TimeUnit: DAILY
+        BudgetLimit:
+          Amount: !Ref DailyBedrockBudgetUSD
+          Unit: USD
+        CostFilters:
+          Service:
+            - Amazon Bedrock
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref AlertTopic
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref AlertTopic
+
+  MonthlyBedrockBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: kinglet-bedrock-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBedrockBudgetUSD
+          Unit: USD
+        CostFilters:
+          Service:
+            - Amazon Bedrock
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref AlertTopic
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref AlertTopic
+
   # ── functions ──────────────────────────────────────────────────────────────
 
   PollerFunction:
@@ -115,12 +226,16 @@ Resources:
         Variables:
           KINGLET_STATE_MACHINE_ARN: !Ref ReviewStateMachine
           KINGLET_MAX_STARTS: !Ref MaxStartsPerRun
+          KINGLET_MAX_STARTS_PER_DAY: !Ref MaxStartsPerDay
       Policies:
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AppSecretName}-*"
         - Statement:
             - Effect: Allow
               Action: states:StartExecution
+              Resource: !Ref ReviewStateMachine
+            - Effect: Allow
+              Action: states:ListExecutions
               Resource: !Ref ReviewStateMachine
 
   PrepareFunction:
@@ -300,3 +415,6 @@ Outputs:
   ScheduleState:
     Description: Turn the schedule on with --parameter-overrides ScheduleState=ENABLED
     Value: !Ref ScheduleState
+  DailyReviewCap:
+    Description: Hard per-day review ceiling enforced in the poller (§13 Q1)
+    Value: !Ref MaxStartsPerDay

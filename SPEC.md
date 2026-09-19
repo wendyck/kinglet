@@ -998,8 +998,24 @@ into Phase 1.
   rather than defense in depth, which is a real downgrade. Three things are
   therefore load-bearing rather than optional:
 
-  1. A **Bedrock budget alarm and an account budget action**, which bound the
-     realistic worst case (§9).
+  1. A **hard per-day review ceiling**, enforced in the poller
+     (`KINGLET_MAX_STARTS_PER_DAY`, default 25), plus Bedrock cost budgets.
+
+     These are not the same kind of control and the difference matters. AWS has
+     **no per-day Bedrock cost cap**: the 16 "model invocation max tokens per
+     day" quotas are AWS-set ceilings in the tens of millions and all report
+     `Adjustable: false`. Budgets are driven by cost data that lags by hours, so
+     a budget cannot stop spend as it happens — it reports after the fact.
+
+     | Control | Kind | Covers |
+     |---|---|---|
+     | Poller per-day ceiling | hard, real time, exact | kinglet's own spend — a runaway loop, a config error, a rebase storm |
+     | Bedrock cost budgets, daily and monthly | lagging alert | anything the poller cannot see, most importantly a leaked task-role credential invoking Bedrock from elsewhere |
+     | Requests-per-minute quota (`L-4A6BFAB1`, adjustable) | hard, real time, rate | the same leaked-credential case, bounding burn rate rather than total |
+
+     The poller counts executions started since UTC midnight from Step Functions
+     itself rather than from a counter it maintains, so there is no state to
+     drift and a redeploy cannot reset the day's tally.
   2. The **Phase 3 red-team evals run in CI** on every change to the skill,
      prompt or config. S3 demonstrated containment; CI is what keeps it true.
   3. The **build-time policy gate** (§8), which already fails the build if the
