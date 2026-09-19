@@ -51,6 +51,7 @@ COPY policy_gate.py          /opt/kinglet/policy_gate.py
 COPY prompt.md               /opt/kinglet/prompt.md
 COPY entrypoint.py           /opt/kinglet/entrypoint.py
 COPY fs_readonly/            /opt/kinglet/fs_readonly/
+COPY vendor/safe_tar.py      /opt/kinglet/safe_tar.py
 COPY skills/                 /opt/kinglet/skills/
 
 # The security audit flags a world-readable config as critical, and it is right
@@ -58,7 +59,9 @@ COPY skills/                 /opt/kinglet/skills/
 RUN chown -R kinglet:kinglet /opt/kinglet \
     && chmod 600 /opt/kinglet/openclaw/openclaw.json
 
-ENV PYTHONPATH=/opt/kinglet \
+ENV HOME=/state/home \
+    XDG_CACHE_HOME=/state/cache \
+    PYTHONPATH=/opt/kinglet \
     PYTHONDONTWRITEBYTECODE=1 \
     OPENCLAW_CONFIG_PATH=/opt/kinglet/openclaw/openclaw.json \
     OPENCLAW_STATE_DIR=/state \

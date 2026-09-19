@@ -19,11 +19,12 @@ import os
 import re
 import subprocess
 import sys
-import tarfile
 import tempfile
 from pathlib import Path
 
 import boto3
+
+from safe_tar import UnsafeArchive, freeze, safe_extract
 
 WORK = Path(os.environ.get("KINGLET_WORK", "/work"))
 STATE = Path(os.environ.get("OPENCLAW_STATE_DIR", "/state"))
@@ -32,17 +33,17 @@ PROMPT = Path(os.environ.get("KINGLET_PROMPT", "/opt/kinglet/prompt.md"))
 
 AGENT_TIMEOUT_S = int(os.environ.get("KINGLET_AGENT_TIMEOUT", "540"))
 
-# Safe-extraction caps (§5.2 step 4 applies the same limits on the way in; we
-# re-apply them here because Tier 2 must not trust its own input either).
-MAX_BUNDLE_BYTES = 50 * 1024 * 1024
-MAX_BUNDLE_FILES = 20_000
+# Extraction uses the same common/safe_tar module Prepare does — one tested
+# implementation rather than two that can drift. Tier 2 re-applies the checks
+# because it must not trust its own input either, even though Prepare built
+# this bundle.
 
 
 def log(msg: str) -> None:
     print(f"[kinglet-reviewer] {msg}", flush=True)
 
 
-def fail(msg: str) -> "NoReturn":  # type: ignore[valid-type]
+def fail(msg: str) -> None:
     print(f"[kinglet-reviewer] FATAL: {msg}", file=sys.stderr, flush=True)
     raise SystemExit(1)
 
@@ -57,40 +58,20 @@ def env(name: str) -> str:
 # ── bundle ───────────────────────────────────────────────────────────────────
 
 
-def safe_extract(tar_path: Path, dest: Path) -> None:
-    """Extract with the §4 malicious-tarball controls: no links, no absolute
-    paths, no traversal, and hard caps on size and file count."""
-    dest_real = dest.resolve()
-    total = 0
-    count = 0
-    with tarfile.open(tar_path, "r:gz") as tf:
-        for member in tf:
-            count += 1
-            if count > MAX_BUNDLE_FILES:
-                fail(f"bundle exceeds {MAX_BUNDLE_FILES} files")
-            if member.islnk() or member.issym():
-                fail(f"bundle contains a link: {member.name}")
-            if not member.isfile() and not member.isdir():
-                fail(f"bundle contains a special file: {member.name}")
-            if member.name.startswith("/") or ".." in Path(member.name).parts:
-                fail(f"unsafe path in bundle: {member.name}")
-            target = (dest_real / member.name).resolve()
-            if target != dest_real and dest_real not in target.parents:
-                fail(f"path escapes destination: {member.name}")
-            total += member.size
-            if total > MAX_BUNDLE_BYTES:
-                fail(f"bundle exceeds {MAX_BUNDLE_BYTES} bytes uncompressed")
-            tf.extract(member, dest_real, filter="data")
-
-
 def fetch_bundle(bucket: str, key: str) -> None:
     log(f"fetching s3://{bucket}/{key}")
     WORK.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", dir="/tmp", delete=True) as tmp:
         boto3.client("s3").download_fileobj(bucket, key, tmp)
         tmp.flush()
-        safe_extract(Path(tmp.name), WORK)
-    log(f"extracted to {WORK}")
+        try:
+            # strip_top_level=False: Prepare's bundle is not wrapped the way a
+            # GitHub tarball is. Stripping would rename repo/ away and drop
+            # task.json, which has no directory component at all.
+            result = safe_extract(Path(tmp.name), WORK, strip_top_level=False)
+        except UnsafeArchive as e:
+            fail(f"refusing the bundle: {e}")
+    log(f"extracted {result.files} files ({result.total_bytes} bytes) to {WORK}")
 
 
 def freeze_work() -> None:
@@ -99,12 +80,7 @@ def freeze_work() -> None:
     openclaw state lives on a separate tmpfs at /state precisely so this does not
     break it (spike F15).
     """
-    for p in sorted(WORK.rglob("*"), reverse=True):
-        try:
-            p.chmod(0o500 if p.is_dir() else 0o400)
-        except OSError:
-            pass
-    WORK.chmod(0o500)
+    freeze(WORK)
     log(f"{WORK} is now read-only")
 
 
@@ -144,7 +120,8 @@ def _json_candidates(text: str):
 def run_agent(model: str) -> str:
     cmd = [
         "openclaw", "agent", "exec",
-        "--isolated",
+        # No --isolated: it cannot be combined with --config, and it would
+        # discard the hardened posture rather than apply it (spike F18).
         "--config", str(CONFIG),
         "--state-dir", str(STATE),
         "--message-file", str(PROMPT),
@@ -180,6 +157,11 @@ def agent_reply_text(envelope_stdout: str) -> str:
 
 
 def main() -> int:
+    # The root filesystem is read-only, so openclaw's HOME and cache have to be
+    # created on the writable state tmpfs before it runs.
+    for d in (STATE / "home", STATE / "cache"):
+        d.mkdir(parents=True, exist_ok=True)
+
     bucket = env("KINGLET_BUCKET")
     bundle_key = env("KINGLET_BUNDLE_KEY")
     result_key = env("KINGLET_RESULT_KEY")

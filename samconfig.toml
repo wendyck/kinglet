@@ -27,4 +27,7 @@ parameter_overrides = [
   "MaxStartsPerDay=25",
   "DailyBedrockBudgetUSD=5",
   "MonthlyBedrockBudgetUSD=40",
+  "ReviewerEnabled=true",
+  "ReviewerImageTag=phase2",
+  "OutputGuardrailId=lubjaymwc18i",
 ]

@@ -40,6 +40,10 @@ BUCKET = os.environ.get("KINGLET_BUCKET", "")
 GUARDRAIL_ID = os.environ.get("KINGLET_GUARDRAIL_ID", "")
 GUARDRAIL_VERSION = os.environ.get("KINGLET_GUARDRAIL_VERSION", "1")
 CONFIG_PATH = os.environ.get("KINGLET_CONFIG", "config/repos.yml")
+# Which reviewer the state machine should route to. Carried in Prepare's
+# output rather than injected by the state machine, because a ResultSelector
+# cannot merge a literal into a payload it is also replacing.
+REVIEWER_MODE = os.environ.get("KINGLET_REVIEWER_MODE", "false")
 
 # §5.2 step 3. Anything outside this set means the PR is doing more than a
 # dependency bump, which is UNEXPECTED_CHANGE and a high floor.
@@ -294,6 +298,7 @@ def handler(event, context):  # noqa: ARG001
         "result_key": f"results/{exec_id}.json",
         "installation_id": installation_id,
         "overall_floor": overall.level,
+        "reviewer_mode": REVIEWER_MODE,
     }
 
 

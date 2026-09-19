@@ -118,6 +118,11 @@
           }
         }
       }
+    },
+    "load": {
+      "paths": [
+        "/usr/local/lib/node_modules/@openclaw/amazon-bedrock-provider"
+      ]
     }
   },
   "skills": {

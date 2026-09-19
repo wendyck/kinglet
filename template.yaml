@@ -52,6 +52,25 @@ Parameters:
   BotLogin:
     Type: String
     Default: "kinglet-bot[bot]"
+  ReviewerImageTag:
+    Type: String
+    Default: "phase2"
+  BedrockModelId:
+    Type: String
+    Default: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  OutputGuardrailId:
+    Type: String
+    Default: "lubjaymwc18i"
+    Description: Provider-attached guardrail, output-side filtering only (§8).
+  ReviewerEnabled:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      false keeps the Phase 1 stub in the pipeline. Flip to true to route the
+      Review state to the Tier 2 container. The switch lives in the state
+      machine rather than in CloudFormation, so both paths stay deployed and
+      flipping back is a parameter change, not a stack rebuild.
 
 Globals:
   Function:
@@ -252,6 +271,9 @@ Resources:
       MemorySize: 1536
       EphemeralStorage:
         Size: 2048
+      Environment:
+        Variables:
+          KINGLET_REVIEWER_MODE: !Ref ReviewerEnabled
       Policies:
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AppSecretName}-*"
@@ -321,6 +343,10 @@ Resources:
         PrepareFunctionArn: !GetAtt PrepareFunction.Arn
         ReviewerFunctionArn: !GetAtt StubReviewerFunction.Arn
         FinalizeFunctionArn: !GetAtt FinalizeFunction.Arn
+        ClusterArn: !GetAtt ReviewerCluster.Arn
+        TaskDefinitionArn: !Ref ReviewerTaskDefinition
+        SubnetId: !Ref ReviewerSubnet
+        SecurityGroupId: !GetAtt ReviewerSecurityGroup.GroupId
       Policies:
         - LambdaInvokePolicy:
             FunctionName: !Ref PrepareFunction
@@ -328,6 +354,18 @@ Resources:
             FunctionName: !Ref StubReviewerFunction
         - LambdaInvokePolicy:
             FunctionName: !Ref FinalizeFunction
+        - Statement:
+            - Effect: Allow
+              Action: [ecs:RunTask, ecs:StopTask, ecs:DescribeTasks]
+              Resource: "*"
+            - Effect: Allow
+              Action: iam:PassRole
+              Resource:
+                - !GetAtt ReviewerTaskRole.Arn
+                - !GetAtt ReviewerExecutionRole.Arn
+            - Effect: Allow
+              Action: [events:PutTargets, events:PutRule, events:DescribeRule]
+              Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventsForECSTaskRule"
 
   SchedulerRole:
     Type: AWS::IAM::Role
@@ -406,6 +444,204 @@ Resources:
       AlarmActions:
         - !Ref AlertTopic
 
+  # ── Tier 2: the reviewer container (§5.3, §13 Q1) ──────────────────────────
+  #
+  # One public subnet, an internet gateway, no NAT and no interface endpoints.
+  # §13 Q1 sets out why: the endpoints cost more than the rest of the system and
+  # protect public repository data plus a short-lived, narrowly scoped task role.
+  # The container's isolation is the task role, the read-only filesystem, the
+  # denied tool surface and a fresh container per PR — not the network.
+
+  ReviewerVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.90.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: kinglet}]
+
+  ReviewerIgw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{Key: Name, Value: kinglet}]
+
+  ReviewerIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ReviewerVpc
+      InternetGatewayId: !Ref ReviewerIgw
+
+  ReviewerSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ReviewerVpc
+      CidrBlock: 10.90.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: kinglet-reviewer}]
+
+  ReviewerRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ReviewerVpc
+
+  ReviewerDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: ReviewerIgwAttachment
+    Properties:
+      RouteTableId: !Ref ReviewerRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref ReviewerIgw
+
+  ReviewerSubnetRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref ReviewerSubnet
+      RouteTableId: !Ref ReviewerRouteTable
+
+  # Egress-only by construction: no ingress rules at all, and nothing listens
+  # in the container anyway (§8 — the reviewer runs `agent exec`, not a gateway).
+  ReviewerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: kinglet reviewer - egress only, no inbound
+      VpcId: !Ref ReviewerVpc
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Bedrock, ECR, S3 and Logs over public endpoints
+
+  ReviewerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: kinglet-reviewer
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {"rules":[{"rulePriority":1,"description":"keep 5 images",
+            "selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},
+            "action":{"type":"expire"}}]}
+
+  ReviewerCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: kinglet
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+
+  ReviewerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /kinglet/reviewer
+      RetentionInDays: 14
+
+  # Pulls the image and writes logs. Holds nothing the container can use.
+  ReviewerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # The only credential the untrusted container holds. Read one prefix, write
+  # another, invoke one model. No Secrets Manager, no meta/ (§9).
+  ReviewerTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: reviewer
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${ArtifactBucket.Arn}/bundles/*"
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${ArtifactBucket.Arn}/results/*"
+              - Effect: Allow
+                Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream,
+                         bedrock:Converse, bedrock:ConverseStream]
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/*"
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/*"
+              # Explicitly not: secretsmanager:*, s3 on meta/*, states:*.
+              - Effect: Deny
+                Action: secretsmanager:*
+                Resource: "*"
+              - Effect: Deny
+                Action: s3:*
+                Resource: !Sub "${ArtifactBucket.Arn}/meta/*"
+
+  ReviewerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: kinglet-reviewer
+      Cpu: "1024"
+      # §5.3 said 2 GB. On Fargate a tmpfs is backed by task memory, so the
+      # three mounts below are subtracted from whatever the runtime gets —
+      # 2 GB left openclaw with too little and it failed with ENOSPC.
+      Memory: "4096"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt ReviewerExecutionRole.Arn
+      TaskRoleArn: !GetAtt ReviewerTaskRole.Arn
+      ContainerDefinitions:
+        - Name: reviewer
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ReviewerRepository}:${ReviewerImageTag}"
+          Essential: true
+          ReadonlyRootFilesystem: true
+          User: "10001"
+          # Two tmpfs mounts (F15): the bundle is frozen read-only after
+          # extraction, so openclaw state cannot live under /work.
+          # Fargate creates tmpfs mounts root-owned regardless of what the
+          # image sets, so the run user is given them explicitly. Without this
+          # the entrypoint cannot create /work/repo.
+          LinuxParameters:
+            Tmpfs:
+              - ContainerPath: /work
+                Size: 512
+                MountOptions: ["uid=10001", "gid=10001", "mode=0700"]
+              - ContainerPath: /state
+                Size: 1024
+                MountOptions: ["uid=10001", "gid=10001", "mode=0700"]
+              - ContainerPath: /tmp
+                Size: 512
+                MountOptions: ["uid=10001", "gid=10001", "mode=0700"]
+          Environment:
+            - Name: KINGLET_BUCKET
+              Value: !Ref ArtifactBucket
+            - Name: KINGLET_MODEL
+              Value: !Sub "amazon-bedrock/${BedrockModelId}"
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ReviewerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: reviewer
+
 Outputs:
   BucketName:
     Description: Artifact bucket (bundles/, meta/, results/)
@@ -422,3 +658,8 @@ Outputs:
   DailyReviewCap:
     Description: Hard per-day review ceiling enforced in the poller (§13 Q1)
     Value: !Ref MaxStartsPerDay
+  ReviewerRepositoryUri:
+    Value: !GetAtt ReviewerRepository.RepositoryUri
+  ReviewerMode:
+    Description: "true = Tier 2 container, false = Phase 1 stub"
+    Value: !Ref ReviewerEnabled

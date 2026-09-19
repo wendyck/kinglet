@@ -1,5 +1,5 @@
 {
-  "Comment": "Kinglet review pipeline (SPEC.md §3, §5.8). Prepare -> Reviewer -> Finalize, with every state caught into Finalize in failure mode so a PR is never left silently unreviewed.",
+  "Comment": "Kinglet review pipeline (SPEC.md \u00a73, \u00a75.8). Prepare -> Reviewer -> Finalize, with every state caught into Finalize in failure mode so a PR is never left silently unreviewed.",
   "StartAt": "Prepare",
   "TimeoutSeconds": 1200,
   "States": {
@@ -16,8 +16,12 @@
       "OutputPath": "$.out",
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException",
-                          "Lambda.SdkClientException", "Lambda.TooManyRequestsException"],
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException"
+          ],
           "IntervalSeconds": 5,
           "MaxAttempts": 3,
           "BackoffRate": 2
@@ -25,16 +29,17 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "FinalizeFailure"
         }
       ],
       "Next": "HeadMoved?"
     },
-
     "HeadMoved?": {
-      "Comment": "§5.2 step 2. Dependabot rebased while we were starting; the next poll picks up the new SHA. Not a failure, so no comment and no label.",
+      "Comment": "\u00a75.2 step 2. Dependabot rebased while we were starting; the next poll picks up the new SHA. Not a failure, so no comment and no label.",
       "Type": "Choice",
       "Choices": [
         {
@@ -43,16 +48,26 @@
           "Next": "Abandoned"
         }
       ],
-      "Default": "Review"
+      "Default": "WhichReviewer?"
     },
-
     "Abandoned": {
       "Type": "Succeed",
       "Comment": "Stale head SHA. The poller will re-enqueue with the current one."
     },
-
+    "WhichReviewer?": {
+      "Comment": "Phase 1's stub and the Tier 2 container are both deployed. Prepare reports reviewer_mode from its own environment, so switching between them is a parameter change rather than a stack rebuild, and rolling back is instant.",
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.reviewer_mode",
+          "StringEquals": "true",
+          "Next": "ReviewInContainer"
+        }
+      ],
+      "Default": "Review"
+    },
     "Review": {
-      "Comment": "Phase 1 runs a stub Lambda that echoes the floor. Phase 2 replaces this state with ecs:runTask.sync against the Tier 2 container (§5.3).",
+      "Comment": "Phase 1 runs a stub Lambda that echoes the floor. Phase 2 replaces this state with ecs:runTask.sync against the Tier 2 container (\u00a75.3).",
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
@@ -66,8 +81,11 @@
       "TimeoutSeconds": 660,
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException",
-                          "Lambda.SdkClientException"],
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
           "IntervalSeconds": 5,
           "MaxAttempts": 2,
           "BackoffRate": 2
@@ -75,14 +93,78 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "FinalizeFailure"
         }
       ],
       "Next": "Finalize"
     },
-
+    "ReviewInContainer": {
+      "Comment": "The Tier 2 reviewer (\u00a75.3). runTask.sync blocks until the task exits; a non-zero exit surfaces as States.TaskFailed and is caught like anything else. Only the S3 keys are passed in \u2014 the container is told where its bundle is and nothing more. ResultPath is null so the task description is discarded and Finalize receives Prepare's output unchanged.",
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "Cluster": "${ClusterArn}",
+        "TaskDefinition": "${TaskDefinitionArn}",
+        "LaunchType": "FARGATE",
+        "PropagateTags": "TASK_DEFINITION",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": [
+              "${SubnetId}"
+            ],
+            "SecurityGroups": [
+              "${SecurityGroupId}"
+            ],
+            "AssignPublicIp": "ENABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [
+            {
+              "Name": "reviewer",
+              "Environment": [
+                {
+                  "Name": "KINGLET_BUNDLE_KEY",
+                  "Value.$": "$.bundle_key"
+                },
+                {
+                  "Name": "KINGLET_RESULT_KEY",
+                  "Value.$": "$.result_key"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "TimeoutSeconds": 900,
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "ECS.AmazonECSException",
+            "ECS.ServerException",
+            "ECS.InvalidParameterException"
+          ],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.error",
+          "Next": "FinalizeFailure"
+        }
+      ],
+      "Next": "Finalize"
+    },
     "Finalize": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
@@ -96,8 +178,11 @@
       "OutputPath": "$.out",
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException",
-                          "Lambda.SdkClientException"],
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
           "IntervalSeconds": 5,
           "MaxAttempts": 3,
           "BackoffRate": 2
@@ -105,16 +190,17 @@
       ],
       "Catch": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "ResultPath": "$.error",
           "Next": "FinalizeFailure"
         }
       ],
       "End": true
     },
-
     "FinalizeFailure": {
-      "Comment": "§5.8. Posts 'could not complete this review', sets risk:high, and records the review key with status=failed so the poller does not loop. Reached from any state, including a Finalize that itself failed.",
+      "Comment": "\u00a75.8. Posts 'could not complete this review', sets risk:high, and records the review key with status=failed so the poller does not loop. Reached from any state, including a Finalize that itself failed.",
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
@@ -131,7 +217,9 @@
       },
       "Retry": [
         {
-          "ErrorEquals": ["States.ALL"],
+          "ErrorEquals": [
+            "States.ALL"
+          ],
           "IntervalSeconds": 10,
           "MaxAttempts": 2,
           "BackoffRate": 2
@@ -139,7 +227,6 @@
       ],
       "Next": "Failed"
     },
-
     "Failed": {
       "Type": "Fail",
       "Comment": "The review did not complete. The PR carries risk:high and a failure comment; the alarm on execution failures fires from here."

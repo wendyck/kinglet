@@ -28,3 +28,4 @@ samconfig.local.toml
 # built into the package at deploy time; config/repos.yml is the source
 src/config/
 src/schemas/
+reviewer/vendor/
