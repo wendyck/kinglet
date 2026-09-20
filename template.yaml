@@ -419,7 +419,15 @@ Resources:
       State: !Ref ScheduleState
       FlexibleTimeWindow:
         Mode: "OFF"
-      ScheduleExpression: rate(10 minutes)
+      # Every six hours, not every ten minutes. This is a personal project
+      # watching two repositories whose Dependabot runs weekly; ten-minute
+      # polling was ~144 runs a day to discover a handful of PRs.
+      #
+      # TWO ALARMS ARE TUNED TO THIS VALUE. Changing it means changing
+      # PollerErrorAlarm's period and PollerSilenceAlarm's period below, or
+      # they silently stop meaning anything — an error alarm whose period is
+      # shorter than the polling interval can never see two consecutive runs.
+      ScheduleExpression: rate(6 hours)
       Target:
         Arn: !GetAtt PollerFunction.Arn
         RoleArn: !GetAtt SchedulerRole.Arn
@@ -450,30 +458,30 @@ Resources:
       AlarmActions:
         - !Ref AlertTopic
 
-  # Two consecutive failed runs, not three failures somewhere in an hour.
+  # Any failed run, because the next attempt is six hours away.
   #
-  # This was `Sum > 2 over 3600s`. The poller runs every ten minutes, so that
-  # meant three of the last six runs had to fail *and* the hour had to elapse:
-  # kinglet could be dead for an hour before anyone heard. With a 600s period
-  # each datapoint is exactly one run, so 2-of-2 is "it failed twice in a row"
-  # and fires in about 20 minutes. One transient GitHub 5xx still says nothing.
+  # At ten-minute polling this was 2-of-2 consecutive runs, so a single
+  # transient GitHub 5xx stayed quiet and the retry came ten minutes later. At
+  # six-hour polling that trade reverses: one failed run means no PR is looked
+  # at until this evening, which is worth an email even if it turns out to be a
+  # blip. The period matches the polling interval so each datapoint is exactly
+  # one run.
   PollerErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: kinglet-poller-errors
       AlarmDescription: >
-        Two consecutive poller runs failed, so no PR is being picked up.
-        Check the poller's logs; GitHub App credentials and rate limits are the
-        usual causes.
+        A poller run failed, so nothing will be picked up until the next run in
+        six hours. Check the poller's logs; GitHub App credentials and rate
+        limits are the usual causes.
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
         - Name: FunctionName
           Value: !Ref PollerFunction
       Statistic: Sum
-      Period: 600
-      EvaluationPeriods: 2
-      DatapointsToAlarm: 2
+      Period: 21600        # one polling interval
+      EvaluationPeriods: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
@@ -497,16 +505,16 @@ Resources:
     Properties:
       AlarmName: kinglet-poller-silent
       AlarmDescription: >
-        The poller has not run in 30 minutes although the schedule is ENABLED.
-        Expect three runs in that window. Check the EventBridge schedule
-        kinglet-poll and the scheduler role.
+        The poller has not run in seven hours although the schedule is ENABLED.
+        It should run every six. Check the EventBridge schedule kinglet-poll
+        and the scheduler role.
       Namespace: AWS/Lambda
       MetricName: Invocations
       Dimensions:
         - Name: FunctionName
           Value: !Ref PollerFunction
       Statistic: Sum
-      Period: 1800
+      Period: 25200        # one polling interval plus an hour of slack
       EvaluationPeriods: 1
       Threshold: 1
       ComparisonOperator: LessThanThreshold

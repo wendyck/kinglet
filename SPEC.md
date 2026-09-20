@@ -54,7 +54,13 @@ Decisions locked in this draft:
 
 **Goals**
 - Every open Dependabot PR on an enrolled repo gets a triage comment and a risk
-  label within about 15 minutes of opening or updating.
+  label within about six hours of opening or updating.
+
+  Originally "about 15 minutes", from ten-minute polling. Revised 2026-09-20:
+  this watches two personal repositories whose Dependabot runs weekly, so
+  ten-minute polling was ~144 runs a day to discover a handful of PRs, and
+  nothing downstream cares whether triage lands in ten minutes or by evening.
+  Kinglet is advisory and never merges, so latency costs nothing.
 - The review is adapted from the Renovate-review skill:
   - usage verification (is the package even imported?);
   - dead-dependency detection;

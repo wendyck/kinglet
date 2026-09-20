@@ -24,7 +24,11 @@ parameter_overrides = [
   "AlertEmail=kinglet@wendyk.org",
   "InputGuardrailId=460y8sih9wtm",
   "InputGuardrailVersion=2",
-  "MaxStartsPerRun=2",
+  # 4, not 2: with four polls a day instead of 144, each one has to be able to
+  # clear a batch. Dependabot opens PRs in groups, and 2-per-run would have
+  # taken three days to work through the current backlog of 8. Still well under
+  # MaxStartsPerDay.
+  "MaxStartsPerRun=4",
   "MaxStartsPerDay=25",
   # Raised 2026-09-20 for Phase 3 development, and deliberately kept.
   # Not a Phase 4 restore item: it comes down when the owner says so.

@@ -39,7 +39,9 @@ aws lambda put-function-concurrency \
   --reserved-concurrent-executions 0 --region us-west-2
 ```
 
-Takes effect in seconds. In-flight executions continue; nothing new starts.
+Takes effect in seconds. In-flight executions continue; nothing new starts. The poller runs every six
+hours, so in most cases you have time — check when it last ran before assuming
+you are racing it.
 
 This **drifts from CloudFormation**, so undo it deliberately:
 
@@ -97,8 +99,8 @@ All three publish to `arn:aws:sns:us-west-2:220840683614:kinglet-alerts`
 
 | Alarm | Fires when | First thing to check |
 |---|---|---|
-| `kinglet-poller-errors` | Two consecutive poller runs failed (~20 min) | Poller logs. GitHub App credentials and rate limits are the usual causes. |
-| `kinglet-poller-silent` | No poller invocation in 30 minutes, schedule `ENABLED` | The EventBridge schedule `kinglet-poll` and the scheduler role. Only exists while the schedule is on. |
+| `kinglet-poller-errors` | A poller run failed | Poller logs. GitHub App credentials and rate limits are the usual causes. Nothing is picked up until the next run in six hours. |
+| `kinglet-poller-silent` | No poller invocation in seven hours, schedule `ENABLED` | The EventBridge schedule `kinglet-poll` and the scheduler role. Only exists while the schedule is on. |
 | `kinglet-review-failures` | Any review execution failed (15 min) | The failed execution's history, then §5.8 below. |
 
 ```bash
@@ -121,7 +123,7 @@ scripts/retry.sh wendyck/csa-wrangler 29
 ```
 
 It deletes the marker comment after confirming, which makes the PR a candidate
-again on the next poll. Deliberate by design — the `status=failed` marker exists
+again on the next poll — up to six hours away, so do not wait on it. Deliberate by design — the `status=failed` marker exists
 precisely to stop automatic retries.
 
 ### A budget alarm fired
@@ -129,7 +131,8 @@ precisely to stop automatic retries.
 `kinglet-bedrock-daily` and `kinglet-bedrock-monthly` are **lagging** — AWS cost
 data is hours behind, so they report spend that already happened. The real-time
 control is `MaxStartsPerDay` (25), enforced in the poller against Step Functions
-executions started today.
+executions started today. `MaxStartsPerRun` (4) bounds a single poll, so the
+practical ceiling is 16 a day across four polls.
 
 Note what that cap does *not* cover: local `replay.py` and `redteam.py` runs go
 straight from Docker to Bedrock and start no execution, so they are not capped
@@ -226,6 +229,17 @@ The App needs `pull_requests: write` and **not** `issues: write` — labels come
 through the pulls API.
 
 ---
+
+## 5a. The polling interval is load-bearing
+
+`rate(6 hours)` in `template.yaml`. **Two alarms are tuned to it**:
+`kinglet-poller-errors` uses a 21600s period (one interval) and
+`kinglet-poller-silent` uses 25200s (one interval plus an hour of slack).
+
+Change the interval and you must change both, or they quietly stop meaning
+anything. An error alarm whose period is shorter than the polling interval can
+never see two consecutive runs; a silence alarm whose period is shorter than
+the interval fires constantly.
 
 ## 6. Things that look fine and are not
 
