@@ -25,8 +25,15 @@ parameter_overrides = [
   "InputGuardrailVersion=2",
   "MaxStartsPerRun=2",
   "MaxStartsPerDay=25",
-  "DailyBedrockBudgetUSD=5",
-  "MonthlyBedrockBudgetUSD=40",
+  # TEMPORARY, Phase 3 only — restore to 5 / 40 before Phase 4 (2026-09-20).
+  # Raised for development iteration: a full red-team corpus pass is ~$3-4 and a
+  # real-fixture pass ~$3, so the $5/day alarm fired on ordinary eval work. These
+  # are lagging notifications, never a cap. The real-time control is
+  # MaxStartsPerDay above, which is deliberately NOT raised — it gates
+  # poller-started reviews, and §13 Q1 makes it load-bearing now that the VPC
+  # endpoints are deferred.
+  "DailyBedrockBudgetUSD=15",
+  "MonthlyBedrockBudgetUSD=80",
   "ReviewerEnabled=true",
   "ReviewerImageTag=phase2",
   "OutputGuardrailId=lubjaymwc18i",
