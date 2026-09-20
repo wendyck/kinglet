@@ -30,7 +30,7 @@ jobs:
                       boto3 pytest pyflakes
 
       - name: Lint
-        run: python -m pyflakes src/ tests/ scripts/replay.py
+        run: python -m pyflakes src/ tests/ scripts/replay.py scripts/redteam.py
 
       - name: Unit tests
         run: python -m pytest tests/unit -q
@@ -44,8 +44,21 @@ jobs:
       - name: Containment — the fs-readonly jail
         run: python -m pytest tests/unit/test_fs_readonly.py -q
 
+      # --no-tree keeps this hermetic. The default now fetches each fixture's
+      # tarball from GitHub, which is the right behaviour for a developer and the
+      # wrong one for CI: eight anonymous API calls from shared runner IPs is a
+      # rate limit waiting to happen, and a network flake here would look like a
+      # kinglet regression. The tree-fetching path is exercised by the eval job.
       - name: Replay every real fixture, floor only
-        run: python scripts/replay.py --all --no-model
+        run: python scripts/replay.py --all --no-model --no-tree
+
+      # The corpus is an index of what "contained" is counted against, and it
+      # used to be able to claim coverage it did not have.
+      - name: The adversarial corpus names tests that exist
+        run: python -m pytest tests/unit/test_redteam_corpus.py -q
+
+      - name: The security banner comes only from the alerts API
+        run: python -m pytest tests/unit/test_security_banner.py -q
 
   posture:
     # The build-time policy gate is the other half: it fails the image build if
@@ -77,3 +90,31 @@ jobs:
             exit 1
           fi
           echo "gate correctly rejected the tampered config"
+
+  evals:
+    # The live half: the adversarial corpus run against the real model.
+    #
+    # Gated on the inputs that can actually change a verdict — the skill, the
+    # prompt, the openclaw config and the corpus itself — because each run costs
+    # real Bedrock spend (~$3-4 for the 7 live cases) and takes ~15 minutes.
+    # Everything above is deterministic and gates every push instead.
+    #
+    # DISABLED until an OIDC role exists in 220840683614 with bedrock:InvokeModel
+    # on the reviewer's inference profile. Until then this is workflow_dispatch
+    # only, and the corpus is run by hand:
+    #   AWS_PROFILE=kinglet python scripts/redteam.py --config <openclaw.json>
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard against a silent no-op
+        run: |
+          if [ -z "${{ vars.KINGLET_EVAL_ROLE_ARN }}" ]; then
+            echo "::error::no eval role configured; refusing to report a pass \
+          for a run that did not happen"
+            exit 1
+          fi

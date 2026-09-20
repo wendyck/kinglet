@@ -268,3 +268,87 @@ def test_no_real_fixture_is_unparseable():
     for f in sorted(FIXTURES.glob("*.json")):
         overall, _, r = floor_for(f.name)
         assert "UNPARSEABLE" not in overall.reasons, f"{f.name}: {r.reasons}"
+
+
+# ── SPEC §12 Phase 3: the real-fixture table, per package ────────────────────
+#
+# The overall level is asserted above. This pins the per-package levels and the
+# reason codes the table names, because those are what drift silently: a config
+# or rule change can keep every overall level identical while changing why.
+
+SPEC_TABLE = {
+    "csa-wrangler-pr7.json": {
+        ("actions/checkout", "/"): (MEDIUM, {"ACTION_MAJOR", "ACTION_TAG_REF"}),
+    },
+    "csa-wrangler-pr20.json": {
+        ("actions/setup-python", "/"): (MEDIUM, {"ACTION_MAJOR", "ACTION_TAG_REF"}),
+    },
+    "csa-wrangler-pr26.json": {
+        ("recipe-scrapers", "/scripts"): (MEDIUM, {"WATCHLIST"}),
+    },
+    "csa-wrangler-pr27.json": {
+        ("pytest", "/"): (LOW, set()),
+        ("recipe-scrapers", "/scripts"): (MEDIUM, {"WATCHLIST"}),
+    },
+    "csa-wrangler-pr10.json": {
+        ("boto3", "/scripts"): (MEDIUM, {"FRAMEWORK", "RANGE_FLOOR_ONLY", "RANGE_SOFTENED"}),
+    },
+    "csa-wrangler-pr28.json": {
+        ("boto3", "/scripts"): (MEDIUM, {"FRAMEWORK", "RANGE_FLOOR_ONLY", "RANGE_SOFTENED"}),
+    },
+    "csa-wrangler-pr29.json": {
+        ("anthropic", "/scripts"): (HIGH, {"ZERO_X_MINOR", "WATCHLIST", "RANGE_FLOOR_ONLY"}),
+    },
+}
+
+
+@pytest.mark.parametrize("fixture", sorted(SPEC_TABLE))
+def test_spec_table_package_levels_and_reasons(fixture):
+    _, floors, parsed = floor_for(fixture)
+    by_name = {(u.name, u.directory): floors[u.key()] for u in parsed.updates}
+
+    expected = SPEC_TABLE[fixture]
+    assert set(by_name) == set(expected), "the fixture's package set changed"
+    for key, (level, reasons) in expected.items():
+        got = by_name[key]
+        assert got.level == level, f"{key}: {got.level} != {level} ({got.reasons})"
+        assert reasons <= set(got.reasons), \
+            f"{key}: missing {sorted(reasons - set(got.reasons))} from {got.reasons}"
+
+
+def test_pr29_is_semantic_so_the_range_does_not_soften_it():
+    """SPEC §12: "#29 … high, ZERO_X_MINOR — semantic, so not softened".
+
+    #29 and #28 are both `>=` range raises. #28's floor comes from an importance
+    rule and softens; #29's comes from a semantic rule and must not.
+    """
+    _, floors, parsed = floor_for("csa-wrangler-pr29.json")
+    anthropic = floors[next(u.key() for u in parsed.updates if u.name == "anthropic")]
+    assert "RANGE_FLOOR_ONLY" in anthropic.reasons, "it is still a range raise"
+    assert "RANGE_SOFTENED" not in anthropic.reasons
+    assert anthropic.level == HIGH
+
+    _, floors28, parsed28 = floor_for("csa-wrangler-pr28.json")
+    boto3 = floors28[next(u.key() for u in parsed28.updates if u.name == "boto3")]
+    assert "RANGE_SOFTENED" in boto3.reasons, "control: an importance rule does soften"
+
+
+def test_calendar_digest_pr6_is_driven_by_one_package_in_the_group():
+    """SPEC §12 leaves #6 as "per-package, depends on the group contents".
+
+    It is a 7-package group whose overall `high` comes from `anthropic` alone.
+    If that package ever drops out, the group should not stay high by accident.
+    """
+    overall, floors, parsed = floor_for("calendar-digest-pr6.json")
+    by_name = {u.name: floors[u.key()] for u in parsed.updates}
+    assert len(by_name) == 7
+    assert overall.level == HIGH
+
+    assert by_name["anthropic"].level == HIGH
+    assert "ZERO_X_MINOR" in by_name["anthropic"].reasons
+    assert [n for n, f in by_name.items() if f.level == HIGH] == ["anthropic"]
+
+    # The rest of the group is genuinely quieter, not incidentally so.
+    assert by_name["boto3"].level == LOW
+    assert {"google-api-python-client", "google-auth"} <= {
+        n for n, f in by_name.items() if f.level == MEDIUM}
