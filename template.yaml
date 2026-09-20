@@ -43,6 +43,16 @@ Parameters:
       per-day Bedrock cost cap — the per-day token quotas are AWS-set ceilings
       of tens of millions and are not adjustable — so this is the real-time
       control. Budgets below are a lagging backstop, not a cap.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: >
+      Where alarms and budget notifications actually go. Empty means nowhere:
+      the topic exists, every alarm publishes to it, and no one is told. That
+      was the live state until 2026-09-20, which matters because §13 Q1 deferred
+      the VPC endpoints on the grounds that the budget guard is required rather
+      than optional. AWS sends a confirmation email; the subscription is
+      `PendingConfirmation` until someone clicks it.
   DailyBedrockBudgetUSD:
     Type: String
     Default: "5"
@@ -87,6 +97,9 @@ Globals:
         KINGLET_BOT_LOGIN: !Ref BotLogin
         KINGLET_GUARDRAIL_ID: !Ref InputGuardrailId
         KINGLET_GUARDRAIL_VERSION: !Ref InputGuardrailVersion
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
 
 Resources:
 
@@ -138,6 +151,14 @@ Resources:
     Properties:
       TopicName: kinglet-alerts
       DisplayName: kinglet
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
 
   # AWS Budgets publishes from its own service principal, so the topic has to
   # let it in explicitly.
