@@ -29,3 +29,6 @@ samconfig.local.toml
 src/config/
 src/schemas/
 reviewer/vendor/
+
+# Replay tarball cache (fetched, never authored)
+tests/fixtures/real/.tarballs/
