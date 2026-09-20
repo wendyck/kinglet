@@ -102,17 +102,30 @@ def fetch_tarball(repo: str, sha: str) -> Path | None:
     token = _token()
     if token:
         headers["Authorization"] = f"token {token}"
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{repo}/tarball/{sha}", headers=headers)
+    url = f"https://api.github.com/repos/{repo}/tarball/{sha}"
     tmp = cached.with_suffix(".partial")
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as out:
-            while chunk := r.read(1 << 20):
-                out.write(chunk)
-    except (urllib.error.URLError, OSError) as e:
-        tmp.unlink(missing_ok=True)
-        print(f"  tarball fetch failed for {repo}@{sha[:8]}: {e}")
-        return None
+
+    # A token scoped to a different repository is rejected outright, which is
+    # worse than sending none at all: these repos are public. CI hits exactly
+    # this — its GITHUB_TOKEN belongs to kinglet, and the fixtures live in
+    # csa-wrangler and calendar-digest.
+    attempts = [headers] + ([{k: v for k, v in headers.items()
+                              if k != "Authorization"}] if token else [])
+    for n, hdrs in enumerate(attempts):
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=hdrs), timeout=120) as r, \
+                    open(tmp, "wb") as out:
+                while chunk := r.read(1 << 20):
+                    out.write(chunk)
+            break
+        except (urllib.error.URLError, OSError) as e:
+            tmp.unlink(missing_ok=True)
+            if n + 1 < len(attempts):
+                print(f"  tarball fetch with a token failed ({e}); retrying anonymously")
+                continue
+            print(f"  tarball fetch failed for {repo}@{sha[:8]}: {e}")
+            return None
     tmp.rename(cached)
     print(f"  fetched tarball {repo}@{sha[:8]} ({cached.stat().st_size // 1024} KiB)")
     return cached

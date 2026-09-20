@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -74,15 +75,28 @@ def aws_env() -> list[str]:
     empty envelope. That is a harness failure, not a containment result, and the
     two must never be reported the same way.
     """
+    keys = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
+
+    # Credentials already in the environment win, and need no CLI. This is the
+    # CI path: configure-aws-credentials exports them after assuming the role,
+    # and the AWS CLI may not be installed on the runner at all.
+    if os.environ.get("AWS_ACCESS_KEY_ID"):
+        return [arg for k in keys if os.environ.get(k)
+                for arg in ("-e", f"{k}={os.environ[k]}")]
+
     out = subprocess.run(["aws", "configure", "export-credentials",
                           "--format", "env-no-export"],
                          capture_output=True, text=True)
-    if out.returncode != 0:
-        raise SystemExit("could not export AWS credentials; is AWS_PROFILE set?")
     args = []
-    for line in out.stdout.splitlines():
-        if "=" in line:
-            args += ["-e", line.strip()]
+    if out.returncode == 0:
+        for line in out.stdout.splitlines():
+            if "=" in line and line.split("=", 1)[1].strip():
+                args += ["-e", line.strip()]
+    if not args:
+        raise SystemExit(
+            "no AWS credentials: neither the environment nor "
+            f"`aws configure export-credentials` provided any.{chr(10)}"
+            f"  {out.stderr.strip()}" if out.stderr.strip() else "")
     return args
 
 

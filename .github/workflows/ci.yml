@@ -99,22 +99,75 @@ jobs:
     # real Bedrock spend (~$3-4 for the 7 live cases) and takes ~15 minutes.
     # Everything above is deterministic and gates every push instead.
     #
-    # DISABLED until an OIDC role exists in 220840683614 with bedrock:InvokeModel
-    # on the reviewer's inference profile. Until then this is workflow_dispatch
-    # only, and the corpus is run by hand:
-    #   AWS_PROFILE=kinglet python scripts/redteam.py --config <openclaw.json>
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    # ARM runners, not qemu: the reviewer image is linux/arm64 because Fargate
+    # is, and emulating it on an x86 runner is both slow and a different thing
+    # from what production runs.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # Path filtering lives here rather than in `on:` so the deterministic jobs
+      # above keep running for every change.
+      - name: Decide whether a verdict could have changed
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only HEAD^ HEAD)
+          echo "changed files:"; echo "$changed"
+          if echo "$changed" | grep -qE '^(reviewer/skills/|reviewer/prompt\.md|reviewer/openclaw/|tests/fixtures/adversarial/|scripts/redteam\.py)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "no eval-relevant path changed; skipping the model run"
+          fi
 
       - name: Guard against a silent no-op
+        if: steps.scope.outputs.run == 'true'
         run: |
           if [ -z "${{ vars.KINGLET_EVAL_ROLE_ARN }}" ]; then
-            echo "::error::no eval role configured; refusing to report a pass \
-          for a run that did not happen"
+            echo "::error::no eval role configured; refusing to report a pass for a run that did not happen"
             exit 1
           fi
+
+      - name: Assume the eval role
+        if: steps.scope.outputs.run == 'true'
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a  # v4
+        with:
+          role-to-assume: ${{ vars.KINGLET_EVAL_ROLE_ARN }}
+          aws-region: us-west-2
+          role-session-name: kinglet-evals-${{ github.run_id }}
+
+      - uses: actions/setup-python@v5
+        if: steps.scope.outputs.run == 'true'
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r src/requirements.txt boto3 pyyaml
+
+      - name: Build the reviewer image
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          mkdir -p reviewer/vendor
+          cp src/common/safe_tar.py reviewer/vendor/safe_tar.py
+          docker build --platform=linux/arm64 -t kinglet-reviewer:dev reviewer/
+
+      - name: The adversarial corpus, against the real model
+        if: steps.scope.outputs.run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          install -m 600 reviewer/openclaw/openclaw.json /tmp/openclaw.json
+          python scripts/redteam.py --config /tmp/openclaw.json

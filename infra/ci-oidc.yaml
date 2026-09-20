@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  GitHub Actions OIDC access for kinglet's live eval job (SPEC.md §12, Phase 3).
+
+  A separate stack from `kinglet` on purpose. CI credentials have a different
+  lifecycle from the application, and the main stack carries pending parameter
+  changes that should not ride along with an IAM change.
+
+  This role exists so the adversarial corpus can be run against the real model
+  in CI. It can invoke one inference profile and apply one guardrail. It cannot
+  read a secret, touch the artifact bucket, or start a review.
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Default: wendyck/kinglet
+  GitHubRef:
+    Type: String
+    Default: refs/heads/main
+    Description: >
+      The ONLY ref allowed to assume this role. Never a wildcard, and never
+      `pull_request`: a fork PR that could assume this role would be an
+      unauthenticated Bedrock endpoint for whoever opened the fork.
+  BedrockModelId:
+    Type: String
+    Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  OutputGuardrailId:
+    Type: String
+    Default: lubjaymwc18i
+
+Resources:
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # Ignored by IAM for this well-known issuer, which validates against its
+      # published JWKS. Kept because CloudFormation requires the property.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  EvalRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: kinglet-ci-evals
+      Description: Runs the adversarial corpus against Bedrock from GitHub Actions.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                # Both conditions are required. `aud` alone would trust every
+                # repository on GitHub; `sub` is what narrows it to one ref of
+                # one repo. StringEquals, not StringLike — no wildcards.
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:${GitHubRef}"
+      Policies:
+        - PolicyName: bedrock-eval-only
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeTheReviewerModel
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock:Converse
+                  - bedrock:ConverseStream
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/*"
+              - Sid: ApplyTheOutputGuardrail
+                Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${OutputGuardrailId}"
+              # The eval harness builds bundles locally and runs the container
+              # locally. It needs Bedrock and nothing else, so everything the
+              # reviewer's own task role is denied is denied here too — plus the
+              # bucket and the state machine, which the reviewer does use.
+              - Sid: NeverAnythingElse
+                Effect: Deny
+                Action:
+                  - secretsmanager:*
+                  - s3:*
+                  - states:*
+                  - ecs:*
+                  - iam:*
+                  - sts:AssumeRole
+                Resource: "*"
+
+Outputs:
+  EvalRoleArn:
+    Description: Set as the KINGLET_EVAL_ROLE_ARN repository variable.
+    Value: !GetAtt EvalRole.Arn
+  TrustedSubject:
+    Description: The single subject allowed to assume the role.
+    Value: !Sub "repo:${GitHubRepo}:ref:${GitHubRef}"
