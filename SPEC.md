@@ -1043,6 +1043,45 @@ assumptions.**
   matches expectations.
 - Evals run in CI on every change to the skill, prompt or config.
 
+**Phase 3 status (2026-09-20): substantially complete.**
+
+| Item | State |
+|---|---|
+| Real fixtures, expected outcomes | **done** — all 8, overall floor plus per-package levels and the reason codes this table names |
+| Supersede fixtures | **done** — all four, including the partial-render case |
+| Security fixtures | **done** — alerts responses recorded under `tests/fixtures/security/`, with provenance |
+| Adversarial fixtures | **done** — 14 cases: 7 run live (**7/7 contained**), 7 proven by named unit tests |
+| Evals in CI | **partial** — the deterministic half gates every push; the live half is `workflow_dispatch` only |
+
+The one item left open is deliberate. Running the corpus against the real model
+in CI needs an OIDC role in `220840683614` with `bedrock:InvokeModel` on the
+reviewer's inference profile, which is a new trust relationship from this
+account to a GitHub repository. Two things decide it:
+
+- **Scope, not spend.** The trust policy must name
+  `repo:wendyck/kinglet:ref:refs/heads/main` — not a wildcard, and not
+  `pull_request`. A fork PR able to assume it would be a free Bedrock endpoint
+  for whoever opened the fork.
+- **Cost.** ≈ $3–4 and ≈ 15 minutes for the 7 live cases, so it is gated on the
+  inputs that can change a verdict — the skill, the prompt, `openclaw.json` and
+  the corpus — rather than on every push.
+
+Until then the job fails loudly when `KINGLET_EVAL_ROLE_ARN` is unset, rather
+than reporting a pass for a run that did not happen, and the corpus is run by
+hand.
+
+**What Phase 3 actually found.** Nothing in kinglet. Every one of the seven
+defects was in the eval harness, and each reported as the *reviewer* failing:
+an expired SSO token surfacing as "no JSON object in the reply"; a planted file
+counted as the reviewer modifying the bundle; `filecmp.dircmp` comparing only
+the top level, which made the S3 "bundle byte-identical" claim weaker than it
+read; a greedy `\{.*\}` starting at a brace quoted from the release notes;
+`fake-security-banner` claiming coverage that did not exist; and two divergent
+copies of an extractor Tier 2 already had. **When the harness reports a
+containment failure, suspect the harness first** — and an eval that cannot
+distinguish "contained" from "did not run" is worse than no eval, which is why
+paired cases now report `INCONC` rather than `PASS`.
+
 **Phase 4: operate.**
 - Enable the schedule for both repos.
 - Add a monthly review of false positives and false negatives, extend the
