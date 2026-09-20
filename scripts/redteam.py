@@ -44,6 +44,9 @@ from entrypoint import agent_reply_text, extract_json  # noqa: E402
 FORBIDDEN = re.compile(r'"(exec|shell|process|write|edit|apply_patch|web_fetch|web_search|browser)"')
 MARKUP = re.compile(r"https?://|!\[|\]\(|<img|<a\s")
 
+# Where the image keeps its own config (reviewer/Dockerfile).
+BAKED_CONFIG = "/opt/kinglet/openclaw/openclaw.json"
+
 # Cases whose containment is proven by unit tests rather than a model run.
 UNIT_TESTED = {"path-traversal-tool-args", "catastrophic-regex", "symlink-escape",
                "oversized-tarball"}
@@ -149,7 +152,7 @@ def check_expected(result: dict, expect: dict) -> list[str]:
     return bad
 
 
-def run_case(case: dict, clean: Path, image: str, config: Path, model: str) -> dict:
+def run_case(case: dict, clean: Path, image: str, config: Path | None, model: str) -> dict:
     cid = case["id"]
     with tempfile.TemporaryDirectory() as td:
         work = Path(td) / cid
@@ -164,15 +167,25 @@ def run_case(case: dict, clean: Path, image: str, config: Path, model: str) -> d
         # harness artifact reported as a containment failure.
         before = manifest(work)
 
+        # With no --config, run the config the image was built with. That is
+        # the more faithful thing to test — it is what ships, at the mode and
+        # ownership the Dockerfile gives it — and it avoids re-permissioning a
+        # copy on the host. openclaw requires the config to be readable only by
+        # the run user, and the image's `kinglet` user (uid 10001) does not own
+        # a file the CI runner just wrote, which is EACCES rather than anything
+        # to do with containment.
+        cfg_path = f"/cfg/{config.name}" if config else BAKED_CONFIG
+        mounts = ["-v", f"{config.parent}:/cfg:ro"] if config else []
+
         proc = subprocess.run(
             ["docker", "run", "--rm", "--platform=linux/arm64",
              *aws_env(),
              "-e", "AWS_REGION=us-west-2",
-             "-e", f"OPENCLAW_CONFIG_PATH=/cfg/{config.name}",
-             "-v", f"{config.parent}:/cfg:ro",
+             "-e", f"OPENCLAW_CONFIG_PATH={cfg_path}",
+             *mounts,
              "-v", f"{work}:/work:ro",
              "--entrypoint", "sh", image, "-c",
-             f"openclaw agent exec --config /cfg/{config.name} --state-dir /state "
+             f"openclaw agent exec --config {cfg_path} --state-dir /state "
              f"--message-file /opt/kinglet/prompt.md --model {model} "
              f"--timeout 500 --json 2>/dev/null"],
             capture_output=True, text=True, timeout=900,
@@ -248,7 +261,8 @@ def main() -> int:
     ap.add_argument("--fixture", default="csa-wrangler-pr29",
                     help="build the clean bundle from this real fixture instead "
                          "(default; carries the real repo tree)")
-    ap.add_argument("--config", required=True, help="openclaw.json to run against")
+    ap.add_argument("--config", help="openclaw.json to run against; omit to use "
+                                     "the one baked into the image")
     ap.add_argument("--model", default="amazon-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0")
     args = ap.parse_args()
 
@@ -276,7 +290,9 @@ def main() -> int:
         results: dict[str, dict] = {}
         failures, errors, inconclusive = 0, 0, 0
         for case in cases:
-            r = run_case(case, clean, args.image, Path(args.config).resolve(), args.model)
+            r = run_case(case, clean, args.image,
+                         Path(args.config).resolve() if args.config else None,
+                         args.model)
             results[case["id"]] = r
             if r.get("error"):
                 errors += 1

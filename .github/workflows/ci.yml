@@ -164,10 +164,11 @@ jobs:
           cp src/common/safe_tar.py reviewer/vendor/safe_tar.py
           docker build --platform=linux/arm64 -t kinglet-reviewer:dev reviewer/
 
+      # No --config: run the config the image was just built with, at the mode
+      # and ownership the Dockerfile gives it. A host copy would be owned by the
+      # runner and unreadable to the image's `kinglet` user.
       - name: The adversarial corpus, against the real model
         if: steps.scope.outputs.run == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          install -m 600 reviewer/openclaw/openclaw.json /tmp/openclaw.json
-          python scripts/redteam.py --config /tmp/openclaw.json
+        run: python scripts/redteam.py
