@@ -1104,6 +1104,38 @@ paired cases now report `INCONC` rather than `PASS`.
 - Add a monthly review of false positives and false negatives, extend the
   deprecation rules, and write a runbook.
 
+**Alerting, verified 2026-09-20.** `kinglet-alerts` had **no subscriptions** —
+every alarm and both budget notifications published to a topic nobody received.
+Deployed, wired, reaching no one, and indistinguishable from healthy from
+inside AWS.
+
+Fixing it took three separate faults, none of them in AWS:
+
+1. A Gmail **routing rule** on the `wck@wendyk.org` catch-all silently dropped
+   mail to `kinglet@wendyk.org` — accepted at SMTP with `250 OK`, then
+   discarded. Fixed by making `kinglet@` an explicit alias so the rule never
+   runs. Visible only in Workspace Email Log Search, which named the rule.
+2. Gmail then classified the confirmation as spam ("suspicious content"). An
+   approved-senders list covers it, and it must contain **both**
+   `sns.amazonaws.com` (the `From:` header) and `amazonses.com` (the envelope
+   sender SNS actually sends through). Keep "authentication required" on, so
+   only DKIM/SPF-passing mail bypasses.
+3. Diagnosing it was slowed by searching for the wrong sender domain. SNS mail
+   comes *from* `...@<region>.amazonses.com`; `sns.amazonaws.com` appears only
+   in the header. Searching the header domain returns nothing and looks like
+   proof of absence.
+
+**Proven end to end**, not inferred: `set-alarm-state` on
+`kinglet-poller-errors` produced "Successfully executed action" in the alarm
+history *and* the mail in the inbox. Repeat this after any change to the topic,
+the subscription or the domain's mail routing — an alert path is not verified
+until a notification has been watched arriving.
+
+**Open before the schedule is enabled.** Both alarms are `Sum > 2 over 3600s,
+1 period`. The poller runs every 10 minutes, so that is "at least three of the
+last six runs failed" and can take an hour to fire. For a system that writes to
+real PRs unattended, that is late and quiet; tune before §12 Phase 4 step 1.
+
 ---
 
 ## 13. Decisions log and open questions
