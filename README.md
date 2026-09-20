@@ -44,8 +44,8 @@ kinglet into calling something safe.
 
 ## Status
 
-**Live** in AWS `220840683614`/us-west-2. The schedule is **ENABLED** and polls
-both enrolled repos every six hours (2026-09-20).
+**Live** in AWS (us-west-2). The schedule is **ENABLED** and polls both enrolled
+repos every six hours (2026-09-20).
 
 Phases 0–3 are complete: the Tier 1 pipeline, the Tier 2 reviewer container, and
 the eval suite (330 unit tests, plus an adversarial corpus of 14 cases — 7 run
