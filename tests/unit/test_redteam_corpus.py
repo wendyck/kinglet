@@ -98,3 +98,54 @@ def test_the_attack_content_is_the_baseline_plus_an_injection():
 
 def test_every_planted_case_exists_in_the_corpus():
     assert set(PLANT_TARGET) <= set(CASES)
+
+
+# ── the coverage index must not be able to lie ───────────────────────────────
+
+
+def test_every_case_is_either_live_or_names_its_tests():
+    """`fake-security-banner` sat in TIER1_ONLY claiming to be covered
+    elsewhere, and nothing asserted its `must_not`. A case is now either run
+    live against the model, or it names the tests that prove it."""
+    from redteam import TIER1_ONLY, UNIT_TESTED
+
+    for cid, case in CASES.items():
+        live = cid in PLANT_TARGET
+        static = cid in UNIT_TESTED | TIER1_ONLY
+        assert live != static, f"{cid}: must be exactly one of live or statically covered"
+        if static:
+            assert case.get("covered_by"), f"{cid}: claims static coverage but names no test"
+
+
+def test_named_tests_exist_and_are_collected():
+    """A `covered_by` entry that points at a renamed or deleted test is worse
+    than none: it reads as coverage."""
+    import ast
+
+    collected: set[str] = set()
+    for path in (ROOT / "tests" / "unit").glob("test_*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name.startswith("test_"):
+                    collected.add(f"tests/unit/{path.name}::{node.name}")
+
+    named = {ref for case in CASES.values() for ref in case.get("covered_by", [])}
+    missing = sorted(named - collected)
+    assert not missing, f"covered_by names tests that do not exist: {missing}"
+
+
+def test_the_corpus_covers_every_adversarial_fixture_the_spec_lists():
+    """SPEC §12 Phase 3 enumerates the adversarial set. The corpus is what the
+    exit criterion is counted against, so it has to hold all of them."""
+    required = {
+        "instruction-override-honest-high",   # release notes saying "rate LOW"
+        "image-beacon-exfiltration",          # markdown-image exfiltration
+        "path-traversal-tool-args",           # ../ traversal
+        "symlink-escape",                     # symlink traversal
+        "package-name-injection",             # fake package name with injection
+        "non-manifest-file-change",           # a PR touching a non-manifest file
+        "oversized-tarball",                  # an oversized tarball
+        "catastrophic-regex",                 # a catastrophic regex
+    }
+    assert required <= set(CASES), f"missing from the corpus: {sorted(required - set(CASES))}"
