@@ -1051,34 +1051,51 @@ assumptions.**
 | Supersede fixtures | **done** — all four, including the partial-render case |
 | Security fixtures | **done** — alerts responses recorded under `tests/fixtures/security/`, with provenance |
 | Adversarial fixtures | **done** — 14 cases: 7 run live (**7/7 contained**), 7 proven by named unit tests |
-| Evals in CI | **partial** — the deterministic half gates every push; the live half is `workflow_dispatch` only |
+| Evals in CI | **done** — deterministic half gates every push; the live corpus ran **7/7 contained** in CI against the real model |
 
-The one item left open is deliberate. Running the corpus against the real model
-in CI needs an OIDC role in `220840683614` with `bedrock:InvokeModel` on the
-reviewer's inference profile, which is a new trust relationship from this
-account to a GitHub repository. Two things decide it:
+**The eval role** (`infra/ci-oidc.yaml`, stack `kinglet-ci`, deployed
+2026-09-20). A separate stack from `kinglet`: CI credentials have their own
+lifecycle, and the main stack carries pending parameter changes that should not
+ride along with an IAM change. The role may invoke one inference profile and
+apply one guardrail; Secrets Manager, S3, Step Functions, ECS, IAM and
+`sts:AssumeRole` are explicitly denied, because the harness builds bundles and
+runs the container locally and needs nothing else.
 
-- **Scope, not spend.** The trust policy must name
-  `repo:wendyck/kinglet:ref:refs/heads/main` — not a wildcard, and not
-  `pull_request`. A fork PR able to assume it would be a free Bedrock endpoint
-  for whoever opened the fork.
-- **Cost.** ≈ $3–4 and ≈ 15 minutes for the 7 live cases, so it is gated on the
-  inputs that can change a verdict — the skill, the prompt, `openclaw.json` and
-  the corpus — rather than on every push.
+The trust policy names exactly one subject, with `StringEquals`:
 
-Until then the job fails loudly when `KINGLET_EVAL_ROLE_ARN` is unset, rather
-than reporting a pass for a run that did not happen, and the corpus is run by
-hand.
+    repo:wendyck@6799320/kinglet@1377348015:ref:refs/heads/main
 
-**What Phase 3 actually found.** Nothing in kinglet. Every one of the seven
-defects was in the eval harness, and each reported as the *reviewer* failing:
+**Not** `repo:wendyck/kinglet:ref:refs/heads/main`, which never matches. The
+repository has `use_immutable_subject: true`, so GitHub embeds the numeric owner
+and repository ids in the claim. The id form is also the one to want: names are
+reassignable, so a policy written against `wendyck/kinglet` would be inherited
+by whoever claims that name next, while ids are never reused.
+
+Nothing about `pull_request` is trusted, and there is no wildcard ref. A fork PR
+able to assume this role would be an unauthenticated Bedrock endpoint for
+whoever opened the fork.
+
+The job runs on `ubuntu-24.04-arm` rather than emulating arm64 on x86, gates on
+the paths that can change a verdict (skill, prompt, `openclaw.json`, corpus),
+and fails loudly when `KINGLET_EVAL_ROLE_ARN` is unset rather than reporting a
+pass for a run that did not happen. It runs the config baked into the image
+rather than a host copy — the Dockerfile's `0600`-owned-by-`kinglet` config is
+unreadable to the container when a CI runner writes it.
+
+**What Phase 3 actually found.** Nothing in kinglet. Every one of the nine
+defects was in the eval harness or the CI wiring, and each reported as the
+*reviewer* failing:
 an expired SSO token surfacing as "no JSON object in the reply"; a planted file
 counted as the reviewer modifying the bundle; `filecmp.dircmp` comparing only
 the top level, which made the S3 "bundle byte-identical" claim weaker than it
 read; a greedy `\{.*\}` starting at a brace quoted from the release notes;
 `fake-security-banner` claiming coverage that did not exist; and two divergent
-copies of an extractor Tier 2 already had. **When the harness reports a
-containment failure, suspect the harness first** — and an eval that cannot
+copies of an extractor Tier 2 already had; an OIDC subject claim whose real
+format was visible only in CloudTrail, where the error said "not authorized" and
+the temptation was to loosen the policy that was in fact correct; and a config
+file unreadable to the container because Docker Desktop had been quietly
+presenting host files as owned by the container user. **When the harness reports
+a containment failure, suspect the harness first** — and an eval that cannot
 distinguish "contained" from "did not run" is worse than no eval, which is why
 paired cases now report `INCONC` rather than `PASS`.
 
