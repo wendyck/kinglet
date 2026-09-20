@@ -25,10 +25,12 @@ parameter_overrides = [
   "InputGuardrailVersion=2",
   "MaxStartsPerRun=2",
   "MaxStartsPerDay=25",
-  # TEMPORARY, Phase 3 only — restore to 5 / 40 before Phase 4 (2026-09-20).
-  # Raised for development iteration: a full red-team corpus pass is ~$3-4 and a
-  # real-fixture pass ~$3, so the $5/day alarm fired on ordinary eval work. These
-  # are lagging notifications, never a cap. The real-time control is
+  # Raised 2026-09-20 for Phase 3 development, and deliberately kept.
+  # Not a Phase 4 restore item: it comes down when the owner says so.
+  # A full red-team corpus pass is ~$3-4 and a real-fixture pass ~$3, so $5/day
+  # was tripping on ordinary eval work. These are lagging notifications, never a
+  # cap — and note they currently notify nobody: the kinglet-alerts topic has no
+  # subscriptions. The real-time control is
   # MaxStartsPerDay above, which is deliberately NOT raised — it gates
   # poller-started reviews, and §13 Q1 makes it load-bearing now that the VPC
   # endpoints are deferred.
