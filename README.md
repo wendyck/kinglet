@@ -14,7 +14,7 @@ See [SPEC.md](SPEC.md) for the full design.
 ## How it works
 
 ```
-EventBridge (10 min) → Poller ─┐
+EventBridge (6 hours) → Poller ┐
                                ├→ Step Functions: Prepare → Reviewer → Finalize
                                │                  (Tier 1)   (Tier 2)   (Tier 1)
                                └→ one sticky PR comment + one risk:* label
@@ -26,9 +26,17 @@ The design turns on a two-tier trust boundary:
   tokens narrowed to one repo and one permission per call, and it computes a
   deterministic risk floor.
 - **Tier 2** (an ephemeral Fargate task per PR, running an LLM reviewer) has no
-  GitHub credentials, no Secrets Manager access and **no route to the internet**.
-  It reads the repo through a jailed read-only MCP server and returns one strictly
-  validated JSON object.
+  GitHub credentials and no Secrets Manager access. It reads the repo through a
+  jailed read-only MCP server, on a read-only root filesystem, and returns one
+  strictly validated JSON object.
+
+  It **does** have outbound network access. The VPC interface endpoints were
+  deferred, not rejected (SPEC.md §13 Q1): they cost more than the rest of the
+  system combined, and what they would protect is public repository data plus a
+  short-lived task role whose worst case is Bedrock cost abuse. That trade makes
+  tool denial the primary exfiltration control rather than defence in depth,
+  which is why the red-team corpus, the per-day review ceiling and the
+  build-time policy gate are load-bearing rather than optional.
 
 Final risk is `max(deterministic floor, model)`. The model can raise risk, never
 lower it — so prompt injection in a PR body or upstream changelog cannot talk
@@ -36,13 +44,14 @@ kinglet into calling something safe.
 
 ## Status
 
-**Deployed** to AWS `220840683614`/us-west-2, with the **schedule DISABLED** —
-kinglet runs only when started by hand. Turning it on is a deliberate act
-(`ScheduleState=ENABLED`), not a side effect of deploying.
+**Live** in AWS `220840683614`/us-west-2. The schedule is **ENABLED** and polls
+both enrolled repos every six hours (2026-09-20).
 
-Phases 0–3 are complete: the Tier 1 pipeline, the Tier 2 reviewer container,
-and the eval suite (327 unit tests, plus an adversarial corpus of 14 cases —
-7 run live against the model in CI, 7/7 contained). Phase 4 is operating it.
+Phases 0–3 are complete: the Tier 1 pipeline, the Tier 2 reviewer container, and
+the eval suite (330 unit tests, plus an adversarial corpus of 14 cases — 7 run
+live against the model in CI, 7/7 contained). Phase 4 is operating it.
+
+To stop it, see the emergency stops at the top of `docs/RUNBOOK.md`.
 
 See `SPEC.md` §12 for the phase detail and `docs/RUNBOOK.md` for how to run it.
 
