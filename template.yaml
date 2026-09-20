@@ -100,6 +100,7 @@ Globals:
 
 Conditions:
   HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
+  ScheduleEnabled: !Equals [!Ref ScheduleState, ENABLED]
 
 Resources:
 
@@ -431,7 +432,10 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: kinglet-review-failures
-      AlarmDescription: A review execution failed (SPEC.md §5.8).
+      AlarmDescription: >
+        A review execution failed (SPEC.md §5.8). One failure is enough to
+        report: reviews are independent, so a single failure is a real PR that
+        did not get reviewed, not noise to be averaged away.
       Namespace: AWS/States
       MetricName: ExecutionsFailed
       Dimensions:
@@ -446,23 +450,70 @@ Resources:
       AlarmActions:
         - !Ref AlertTopic
 
+  # Two consecutive failed runs, not three failures somewhere in an hour.
+  #
+  # This was `Sum > 2 over 3600s`. The poller runs every ten minutes, so that
+  # meant three of the last six runs had to fail *and* the hour had to elapse:
+  # kinglet could be dead for an hour before anyone heard. With a 600s period
+  # each datapoint is exactly one run, so 2-of-2 is "it failed twice in a row"
+  # and fires in about 20 minutes. One transient GitHub 5xx still says nothing.
   PollerErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: kinglet-poller-errors
-      AlarmDescription: The poller is erroring, so nothing is being reviewed.
+      AlarmDescription: >
+        Two consecutive poller runs failed, so no PR is being picked up.
+        Check the poller's logs; GitHub App credentials and rate limits are the
+        usual causes.
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
         - Name: FunctionName
           Value: !Ref PollerFunction
       Statistic: Sum
-      Period: 3600
-      EvaluationPeriods: 1
-      Threshold: 2
-      ComparisonOperator: GreaterThanThreshold
+      Period: 600
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
       AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+  # The failure mode no error rate can see: the poller stops running at all.
+  #
+  # `Errors` only exists when something is invoked, so a schedule that is
+  # disabled, deleted or broken produces no datapoints and no alarm — silence
+  # that reads exactly like health. This is the one alarm that must treat
+  # missing data as breaching.
+  #
+  # Only exists when the schedule is ENABLED, because when it is off, silence
+  # is the correct state and this would fire forever.
+  PollerSilenceAlarm:
+    Condition: ScheduleEnabled
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: kinglet-poller-silent
+      AlarmDescription: >
+        The poller has not run in 30 minutes although the schedule is ENABLED.
+        Expect three runs in that window. Check the EventBridge schedule
+        kinglet-poll and the scheduler role.
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref PollerFunction
+      Statistic: Sum
+      Period: 1800
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
         - !Ref AlertTopic
 
   # ── Tier 2: the reviewer container (§5.3, §13 Q1) ──────────────────────────
