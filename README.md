@@ -36,7 +36,15 @@ kinglet into calling something safe.
 
 ## Status
 
-Phase 0 — de-risking spikes. Nothing is deployed yet. See SPEC.md §12.
+**Deployed** to AWS `220840683614`/us-west-2, with the **schedule DISABLED** —
+kinglet runs only when started by hand. Turning it on is a deliberate act
+(`ScheduleState=ENABLED`), not a side effect of deploying.
+
+Phases 0–3 are complete: the Tier 1 pipeline, the Tier 2 reviewer container,
+and the eval suite (327 unit tests, plus an adversarial corpus of 14 cases —
+7 run live against the model in CI, 7/7 contained). Phase 4 is operating it.
+
+See `SPEC.md` §12 for the phase detail and `docs/RUNBOOK.md` for how to run it.
 
 ## Layout
 
@@ -49,3 +57,8 @@ Phase 0 — de-risking spikes. Nothing is deployed yet. See SPEC.md §12.
 | `reviewer/` | Tier 2 container image, fixed prompt, skill, fs-readonly MCP server |
 | `tests/fixtures/real/` | Snapshots of real Dependabot PRs |
 | `tests/fixtures/adversarial/` | Prompt-injection corpus |
+| `docs/RUNBOOK.md` | Emergency stops, what each alarm means, deploy procedure |
+| `docs/spikes/` | Findings F1–F25 from de-risking, and what they changed |
+| `infra/ci-oidc.yaml` | The GitHub Actions eval role (separate stack) |
+| `scripts/replay.py` | Replay a real PR through the reviewer locally |
+| `scripts/redteam.py` | Run the adversarial corpus against the real model |
