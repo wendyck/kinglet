@@ -11,9 +11,18 @@ Description: >
   read a secret, touch the artifact bucket, or start a review.
 
 Parameters:
-  GitHubRepo:
+  GitHubOwner:
     Type: String
-    Default: wendyck/kinglet
+    Default: wendyck
+  GitHubOwnerId:
+    Type: String
+    Default: "6799320"
+  GitHubRepoName:
+    Type: String
+    Default: kinglet
+  GitHubRepoId:
+    Type: String
+    Default: "1377348015"
   GitHubRef:
     Type: String
     Default: refs/heads/main
@@ -59,8 +68,24 @@ Resources:
                 # Both conditions are required. `aud` alone would trust every
                 # repository on GitHub; `sub` is what narrows it to one ref of
                 # one repo. StringEquals, not StringLike — no wildcards.
+                #
+                # This repository issues GitHub's *immutable* subject claim
+                # (`use_immutable_subject: true`), which embeds the numeric
+                # owner and repository ids:
+                #
+                #   repo:wendyck@6799320/kinglet@1377348015:ref:refs/heads/main
+                #
+                # A trust policy written against the plain
+                # `repo:wendyck/kinglet:...` form simply never matches — that is
+                # how this was found, in CloudTrail rather than by guessing.
+                #
+                # The id form is also the one worth wanting. Names are
+                # reassignable: delete or rename the repo and whoever claims
+                # `wendyck/kinglet` next inherits a trust policy written against
+                # the name. Ids are not reused, so this grant cannot be
+                # inherited by a different repository that merely looks alike.
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:${GitHubRef}"
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepoName}@${GitHubRepoId}:ref:${GitHubRef}"
       Policies:
         - PolicyName: bedrock-eval-only
           PolicyDocument:
@@ -101,4 +126,4 @@ Outputs:
     Value: !GetAtt EvalRole.Arn
   TrustedSubject:
     Description: The single subject allowed to assume the role.
-    Value: !Sub "repo:${GitHubRepo}:ref:${GitHubRef}"
+    Value: !Sub "repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepoName}@${GitHubRepoId}:ref:${GitHubRef}"
