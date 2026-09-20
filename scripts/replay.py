@@ -59,6 +59,15 @@ from common.validate import (  # noqa: E402
 )
 from prepare.app import build_file_index  # noqa: E402
 
+# The reviewer's own extractor, not a second copy of it. Both earlier copies
+# drifted: this harness used a greedy `\{.*\}` span, which starts at the first
+# brace in the reply — often one quoted inside the release notes — and so failed
+# to parse a perfectly good result object. One tested implementation, the same
+# reasoning as safe_tar.
+sys.path.insert(0, str(ROOT / "src" / "common"))  # entrypoint imports it flat
+sys.path.insert(0, str(ROOT / "reviewer"))
+from entrypoint import agent_reply_text, extract_json  # noqa: E402
+
 FIXTURES = ROOT / "tests" / "fixtures" / "real"
 TARBALLS = FIXTURES / ".tarballs"
 IMAGE = "kinglet-reviewer:dev"
@@ -250,17 +259,10 @@ def run_container(work: Path, config: Path) -> dict | None:
         print(f"  the agent did not complete: {err.get('message')} "
               f"({err.get('kind')}) — this is a harness failure, not a verdict")
         return None
-    final = envelope.get("final") or ""
-    import re
-    for block in re.findall(r"```(?:json)?\s*(.+?)```", final, re.S) + [final]:
-        try:
-            obj = json.loads(block.strip())
-            if isinstance(obj, dict) and "packages" in obj:
-                return obj
-        except json.JSONDecodeError:
-            continue
-    print(f"  no JSON object in the reply: {final[-300:]}")
-    return None
+    result = extract_json(agent_reply_text(p.stdout))
+    if result is None:
+        print(f"  no JSON object in the reply: {(envelope.get('final') or '')[-300:]}")
+    return result
 
 
 def floor_only_result(meta: dict) -> dict:
