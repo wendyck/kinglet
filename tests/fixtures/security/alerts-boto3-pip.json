@@ -1,0 +1,55 @@
+[
+  {
+    "number": 1,
+    "state": "open",
+    "dependency": {
+      "package": { "ecosystem": "pip", "name": "boto3" },
+      "manifest_path": "scripts/requirements.txt",
+      "scope": "runtime",
+      "relationship": "direct"
+    },
+    "security_advisory": {
+      "ghsa_id": "GHSA-7f3w-5xq4-2vvq",
+      "cve_id": "CVE-2026-31337",
+      "summary": "Credential leakage in boto3 session serialization",
+      "description": "A session serialized with `boto3.Session.get_credentials()` may retain the secret access key in a debug repr, which some logging configurations write to disk.",
+      "severity": "high",
+      "identifiers": [
+        { "value": "GHSA-7f3w-5xq4-2vvq", "type": "GHSA" },
+        { "value": "CVE-2026-31337", "type": "CVE" }
+      ],
+      "references": [
+        { "url": "https://github.com/advisories/GHSA-7f3w-5xq4-2vvq" }
+      ],
+      "published_at": "2026-09-01T12:00:00Z",
+      "updated_at": "2026-09-02T09:14:00Z",
+      "withdrawn_at": null,
+      "vulnerabilities": [
+        {
+          "package": { "ecosystem": "pip", "name": "boto3" },
+          "severity": "high",
+          "vulnerable_version_range": "< 1.43.50",
+          "first_patched_version": { "identifier": "1.43.50" }
+        }
+      ],
+      "cvss": { "vector_string": "CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N", "score": 6.2 },
+      "cwes": [ { "cwe_id": "CWE-532", "name": "Insertion of Sensitive Information into Log File" } ]
+    },
+    "security_vulnerability": {
+      "package": { "ecosystem": "pip", "name": "boto3" },
+      "severity": "high",
+      "vulnerable_version_range": "< 1.43.50",
+      "first_patched_version": { "identifier": "1.43.50" }
+    },
+    "url": "https://api.github.com/repos/wendyck/csa-wrangler/dependabot/alerts/1",
+    "html_url": "https://github.com/wendyck/csa-wrangler/security/dependabot/1",
+    "created_at": "2026-09-01T12:05:00Z",
+    "updated_at": "2026-09-01T12:05:00Z",
+    "dismissed_at": null,
+    "dismissed_by": null,
+    "dismissed_reason": null,
+    "dismissed_comment": null,
+    "fixed_at": null,
+    "auto_dismissed_at": null
+  }
+]
