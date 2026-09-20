@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 
 import boto3
 import yaml
@@ -129,12 +130,27 @@ def reviewed_key(comments: list[dict], bot_login: str) -> str | None:
 # ── the poll ─────────────────────────────────────────────────────────────────
 
 
-def candidates_for_repo(repo: str, *, token: str, bot_login: str) -> list[dict]:
+@dataclass
+class Scan:
+    """What one repository's poll found.
+
+    The counts exist so a quiet poll can be told apart from a broken one. A
+    result of "nothing to do" and a result of "discovery returned nothing"
+    are the same summary otherwise, and they mean opposite things.
+    """
+
+    candidates: list[dict]
+    dependabot_prs: int = 0
+    already_reviewed: int = 0
+
+
+def candidates_for_repo(repo: str, *, token: str, bot_login: str) -> Scan:
     """Open Dependabot PRs on `repo` that need a review, newest PR last."""
-    out = []
+    scan = Scan(candidates=[])
     for pr in gh.list_open_pulls(repo, token=token):
         if not is_dependabot_pr(pr):
             continue
+        scan.dependabot_prs += 1
         number = pr["number"]
         commits = gh.list_pull_commits(repo, number, token=token)
         if not commits:
@@ -145,16 +161,18 @@ def candidates_for_repo(repo: str, *, token: str, bot_login: str) -> list[dict]:
         comments = gh.list_issue_comments(repo, number, token=token)
         if reviewed_key(comments, bot_login) == key:
             log.info("skip %s#%s: already reviewed at key %s", repo, number, key[:12])
+            scan.already_reviewed += 1
             continue
 
-        out.append({
+        scan.candidates.append({
             "repo": repo,
             "pr": number,
             "head_sha": pr["head"]["sha"],
             "review_key": key,
             "title": pr.get("title", "")[:200],
         })
-    return sorted(out, key=lambda c: c["pr"])
+    scan.candidates.sort(key=lambda c: c["pr"])
+    return scan
 
 
 def executions_started_today(sfn, state_machine_arn: str, *, now=None) -> int:
@@ -208,6 +226,7 @@ def handler(event, context):  # noqa: ARG001
                 "daily_cap_reached": True, "started_today": today}
 
     started, skipped, considered = [], 0, 0
+    repos_polled, dependabot_prs, already_reviewed = 0, 0, 0
 
     for inst in app.installations():
         inst_id = inst["id"]
@@ -215,10 +234,14 @@ def handler(event, context):  # noqa: ARG001
         # Both switches must agree (§5.1): an accidental install does not start
         # a review, and a config entry without an install does nothing.
         for repo in sorted(installed & enrolled):
+            repos_polled += 1
             token = app.installation_token(
                 inst_id, repositories=[repo.split("/")[-1]],
                 permissions={"contents": "read", "pull_requests": "read"})
-            for cand in candidates_for_repo(repo, token=token, bot_login=bot_login):
+            scan = candidates_for_repo(repo, token=token, bot_login=bot_login)
+            dependabot_prs += scan.dependabot_prs
+            already_reviewed += scan.already_reviewed
+            for cand in scan.candidates:
                 considered += 1
                 if len(started) >= min(max_starts, budget_left):
                     skipped += 1
@@ -237,6 +260,8 @@ def handler(event, context):  # noqa: ARG001
                     skipped += 1
 
     result = {"started": started, "skipped": skipped, "considered": considered,
+              "repos_polled": repos_polled, "dependabot_prs": dependabot_prs,
+              "already_reviewed": already_reviewed,
               "max_starts": max_starts, "started_today": today + len(started),
               "daily_cap": MAX_STARTS_PER_DAY}
     log.info("poll complete: %s", json.dumps(result))

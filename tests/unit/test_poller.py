@@ -236,3 +236,68 @@ def test_stops_reading_at_the_first_older_execution():
 def test_an_execution_exactly_at_midnight_counts_as_today():
     sfn = FakeSFN([MIDNIGHT])
     assert executions_started_today(sfn, "arn", now=NOW) == 1
+
+
+# ── the summary must tell a quiet poll from a broken one ─────────────────────
+
+
+def dependabot_pr(number: int, *, login="dependabot[bot]", type_="Bot") -> dict:
+    """A PR shaped the way is_dependabot_pr actually checks: same-repo head,
+    a dependabot/ branch, and a Bot user. All four must hold (§5.1)."""
+    return {
+        "number": number,
+        "user": {"login": login, "type": type_},
+        "head": {"sha": f"sha{number}", "ref": f"dependabot/pip/thing-{number}",
+                 "repo": {"full_name": "o/r"}},
+        "base": {"ref": "main", "repo": {"full_name": "o/r"}},
+        "title": f"bump thing-{number}",
+    }
+
+
+def test_scan_counts_what_it_looked_at(monkeypatch):
+    """The first live poll logged eight "already reviewed" skips and reported
+    `considered: 0, skipped: 0` — identical to what a poll would report if
+    discovery had silently returned nothing."""
+    import poller.app as pa
+
+    prs = [dependabot_pr(n) for n in (1, 2, 3)]
+    monkeypatch.setattr(pa.gh, "list_open_pulls", lambda repo, token: prs)
+    monkeypatch.setattr(pa.gh, "list_pull_commits", lambda repo, n, token: [
+        {"commit": {"message": "bump\n\nUpdated-By: dependabot"}}])
+    monkeypatch.setattr(pa.gh, "list_pull_files", lambda repo, n, token: [])
+    monkeypatch.setattr(pa.gh, "list_issue_comments", lambda repo, n, token: [])
+
+    scan = pa.candidates_for_repo("o/r", token="t", bot_login="kinglet-bot[bot]")
+    assert scan.dependabot_prs == 3
+    assert scan.already_reviewed == 0
+    assert len(scan.candidates) == 3
+
+
+def test_already_reviewed_prs_are_counted_not_just_dropped(monkeypatch):
+    import poller.app as pa
+
+    prs = [dependabot_pr(1)]
+    monkeypatch.setattr(pa.gh, "list_open_pulls", lambda repo, token: prs)
+    monkeypatch.setattr(pa.gh, "list_pull_commits", lambda repo, n, token: [
+        {"commit": {"message": "bump\n\nUpdated-By: dependabot"}}])
+    monkeypatch.setattr(pa.gh, "list_pull_files", lambda repo, n, token: [])
+
+    key = pa.review_key("bump\n\nUpdated-By: dependabot", [])
+    monkeypatch.setattr(pa.gh, "list_issue_comments", lambda repo, n, token: [
+        {"user": {"login": "kinglet-bot[bot]"},
+         "body": f"<!-- kinglet:v1 key={key} sha=abc status=ok -->"}])
+
+    scan = pa.candidates_for_repo("o/r", token="t", bot_login="kinglet-bot[bot]")
+    assert scan.candidates == []
+    assert scan.dependabot_prs == 1
+    assert scan.already_reviewed == 1, \
+        "a skipped PR must still be visible in the summary"
+
+
+def test_non_dependabot_prs_are_not_counted(monkeypatch):
+    import poller.app as pa
+
+    prs = [dependabot_pr(1, login="someone", type_="User")]
+    monkeypatch.setattr(pa.gh, "list_open_pulls", lambda repo, token: prs)
+    scan = pa.candidates_for_repo("o/r", token="t", bot_login="kinglet-bot[bot]")
+    assert scan.dependabot_prs == 0 and scan.candidates == []

@@ -20,7 +20,11 @@ resolve_s3 = true
 confirm_changeset = false
 fail_on_empty_changeset = false
 parameter_overrides = [
-  "ScheduleState=DISABLED",
+  # ENABLED 2026-09-20, after: the alert path was verified end to end (a forced
+  # alarm watched arriving in the inbox), the alarms were tuned to the polling
+  # interval, and docs/RUNBOOK.md was written. Turning this off again is the
+  # first entry in that runbook.
+  "ScheduleState=ENABLED",
   "AlertEmail=kinglet@wendyk.org",
   "InputGuardrailId=460y8sih9wtm",
   "InputGuardrailVersion=2",
