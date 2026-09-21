@@ -1,5 +1,5 @@
 # Tier 1 Lambda dependencies. boto3 is provided by the Lambda runtime.
-cryptography==46.0.3
+cryptography==50.0.0
 packaging==26.3
 PyYAML==6.0.3
 jsonschema==4.26.0
