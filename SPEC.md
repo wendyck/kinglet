@@ -1148,8 +1148,8 @@ real PRs unattended, that is late and quiet; tune before §12 Phase 4 step 1.
 
 **Resolved**
 - **Q2. Model:** Claude Sonnet on Bedrock, pinned to
-  `us.anthropic.claude-sonnet-4-5-20250929-v1:0`. Confirmed invokable in account
-  `220840683614` on 2026-09-19. Two constraints found while confirming it:
+  `us.anthropic.claude-sonnet-4-5-20250929-v1:0`. Confirmed invokable in the
+  kinglet account on 2026-09-19. Two constraints found while confirming it:
   `us.anthropic.claude-sonnet-5` returns "not available for this account" and
   would need a model-access request, and the `global.*` profiles are likewise
   unavailable, so the `us.*` profile is the one to use. Upgrades are deliberate

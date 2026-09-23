@@ -8,6 +8,12 @@ returns `Token has expired and refresh failed`, run `aws sso login --profile
 kinglet` first — an expired token surfaces as almost any other error, which has
 already cost one debugging session.
 
+Commands that need the account ID use `${ACCOUNT_ID}`. Set it once per shell:
+
+```bash
+export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+```
+
 ---
 
 ## 0. Blast radius
@@ -81,7 +87,7 @@ given execution took. Flipping back is the same change in reverse.
 
 ```bash
 aws stepfunctions list-executions \
-  --state-machine-arn arn:aws:states:us-west-2:220840683614:stateMachine:kinglet-review \
+  --state-machine-arn arn:aws:states:us-west-2:${ACCOUNT_ID}:stateMachine:kinglet-review \
   --status-filter RUNNING --region us-west-2
 
 aws stepfunctions stop-execution --execution-arn <arn> --region us-west-2
@@ -94,7 +100,7 @@ comment and stays a candidate for the next poll. That is usually what you want.
 
 ## 2. The alarms
 
-All three publish to `arn:aws:sns:us-west-2:220840683614:kinglet-alerts`
+All three publish to `arn:aws:sns:us-west-2:${ACCOUNT_ID}:kinglet-alerts`
 (→ `kinglet@wendyk.org`). The two poller alarms also send on recovery.
 
 | Alarm | Fires when | First thing to check |
@@ -207,7 +213,7 @@ The reviewer image is separate from the stack:
 
 ```bash
 make image
-docker tag kinglet-reviewer:dev 220840683614.dkr.ecr.us-west-2.amazonaws.com/kinglet-reviewer:phase2
+docker tag kinglet-reviewer:dev ${ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com/kinglet-reviewer:phase2
 # then docker push, and bump ReviewerImageTag if the tag changed
 ```
 
@@ -217,12 +223,12 @@ docker tag kinglet-reviewer:dev 220840683614.dkr.ecr.us-west-2.amazonaws.com/kin
 
 | Thing | Value |
 |---|---|
-| AWS account | `220840683614`, `us-west-2`, profile `kinglet` |
+| AWS account | `aws sts get-caller-identity`, `us-west-2`, profile `kinglet` |
 | GitHub App | `kinglet-bot`, App ID `5003415`, installation `163070921` |
 | App key | Secrets Manager `kinglet/github-app`; backup in 1Password (Private vault, "kinglet bot key" — filed as an SSH key, but it is a PKCS#1 RSA key) |
 | Enrolled repos | `wendyck/calendar-digest`, `wendyck/csa-wrangler` |
 | Guardrails | input `460y8sih9wtm` v2 (prompt-attack only), output `lubjaymwc18i` v1 |
-| Artifact bucket | `kinglet-artifacts-220840683614-us-west-2`, 7-day expiry |
+| Artifact bucket | `kinglet-artifacts-${ACCOUNT_ID}-us-west-2`, 7-day expiry |
 | CI eval role | `kinglet-ci-evals`, stack `kinglet-ci`, trusted only from `refs/heads/main` |
 
 The App needs `pull_requests: write` and **not** `issues: write` — labels come

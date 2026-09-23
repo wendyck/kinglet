@@ -56,8 +56,7 @@ App settings → *Display information* → *Upload a logo*.
 jewel: it is the only credential in the whole system, and it lives in Tier 1
 only. The reviewer container never sees it (§3).
 
-Put it straight into Secrets Manager in `220840683614`/us-west-2 and delete the
-local copy:
+Put it straight into Secrets Manager in us-west-2 and delete the local copy:
 
 ```bash
 aws secretsmanager create-secret \
@@ -90,8 +89,7 @@ start a review.
 
 App ID **5003415**, installation **163070921**, installed on
 `wendyck/calendar-digest` and `wendyck/csa-wrangler`. The secret lives at
-`kinglet/github-app` in `220840683614`/us-west-2 as
-`{app_id, private_key}`.
+`kinglet/github-app` in us-west-2 as `{app_id, private_key}`.
 
 Verified end to end on 2026-09-19: the key signs a JWT that `GET /app`
 accepts; the App reports exactly the four permissions above with `events: none`;

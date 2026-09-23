@@ -14,7 +14,7 @@ Probe image: `node:24-slim` + `npm i -g openclaw@2026.9.5`.
 
 ## Blocker — the Kinglet AWS account is in verification hold
 
-Every `bedrock-runtime:InvokeModel` call in `220840683614` returns:
+Every `bedrock-runtime:InvokeModel` call in the kinglet account returns:
 
 ```
 AccessDeniedException: Your account is currently being verified. Verification
@@ -317,8 +317,8 @@ result from the core schema means nothing about plugin-provided config.**
 **Done.** The guardrail now exists and is attached:
 
 - `kinglet-reviewer`, id `460y8sih9wtm`, published **version 1** (READY), in
-  `220840683614`/us-west-2. Prompt-attack filter at HIGH on input; hate, insults,
-  sexual, violence and misconduct filters on output; two denied topics,
+  us-west-2. Prompt-attack filter at HIGH on input; hate, insults, sexual,
+  violence and misconduct filters on output; two denied topics,
   `CredentialDisclosure` and `ReviewInstructionOverride`.
 - Attached at the provider with `streamProcessingMode: "sync"` and
   `trace: "enabled"`, and asserted by the policy gate, which also rejects a
